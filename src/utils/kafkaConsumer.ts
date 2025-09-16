@@ -221,7 +221,7 @@ export class KafkaConsumerService {
                     // eslint-disable-next-line no-console
                     console.log(`Timeout nådd. Hentet ${messages.length} meldinger`)
                     resolve()
-                }, 5000)
+                }, 500)
 
                 const checkMessages = () => {
                     if (messages.length >= maxMessages) {
