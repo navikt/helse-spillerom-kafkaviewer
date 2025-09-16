@@ -103,9 +103,16 @@ export class KafkaConsumerService {
     }
 
     async readMessagesFromTopic(topic: string, maxMessages: number = 100): Promise<KafkaMessage[]> {
-        // Opprett ny consumer og admin for hver request
+        // Opprett ny consumer og admin for hver request med optimaliserte innstillinger
         const admin = this.kafka.admin()
-        const consumer = this.kafka.consumer({ groupId: this.groupId })
+        const consumer = this.kafka.consumer({
+            groupId: this.groupId,
+            // Optimalisering for raskere oppstart
+            sessionTimeout: 10000, // Kortere session timeout
+            rebalanceTimeout: 5000, // Kortere rebalanse timeout
+            heartbeatInterval: 3000, // Hyppigere heartbeat
+            maxWaitTimeInMs: 1000, // Kortere venting på meldinger
+        })
 
         const messages: KafkaMessage[] = []
 
@@ -164,6 +171,9 @@ export class KafkaConsumerService {
             // Subscribe til topic
             await consumer.subscribe({ topic, fromBeginning: true })
 
+            // Variabel for å signalere at vi er ferdige
+            let messageResolver: (() => void) | null = null
+
             // Start consumer først
             consumer.run({
                 partitionsConsumedConcurrently: seekPositions.length,
@@ -187,14 +197,19 @@ export class KafkaConsumerService {
                     console.log(
                         `Hentet melding ${messages.length}/${maxMessages} fra partition ${partition}, offset ${message.offset}`,
                     )
+
+                    // Resolver umiddelbart når vi har nok meldinger
+                    if (messages.length >= maxMessages && messageResolver) {
+                        messageResolver()
+                    }
                 },
             })
 
-            // Vent på at consumer'en blir tildelt partisjoner
+            // Vent på at consumer'en blir tildelt partisjoner (kortere timeout)
             await new Promise<void>((resolve, reject) => {
                 const timeout = setTimeout(() => {
                     reject(new Error('Timeout ved venting på partisjon-tildeling'))
-                }, 5000)
+                }, 500) // Redusert fra 5s til 3s
 
                 consumer.on('consumer.group_join', async () => {
                     clearTimeout(timeout)
@@ -217,22 +232,23 @@ export class KafkaConsumerService {
 
             // Vent på meldinger med timeout
             await new Promise<void>((resolve) => {
+                messageResolver = resolve // Sett resolver slik at eachMessage kan kalle den
+
                 const timeout = setTimeout(() => {
+                    messageResolver = null // Nullstill resolver
                     // eslint-disable-next-line no-console
                     console.log(`Timeout nådd. Hentet ${messages.length} meldinger`)
                     resolve()
                 }, 500)
 
-                const checkMessages = () => {
-                    if (messages.length >= maxMessages) {
-                        clearTimeout(timeout)
-                        resolve()
-                    } else {
-                        setTimeout(checkMessages, 100)
-                    }
+                const originalResolver = resolve
+                messageResolver = () => {
+                    messageResolver = null // Nullstill resolver
+                    clearTimeout(timeout)
+                    // eslint-disable-next-line no-console
+                    console.log(`Hentet alle ${messages.length} meldinger - stopper tidlig`)
+                    originalResolver()
                 }
-
-                checkMessages()
             })
         } finally {
             // Koble fra consumer og admin
