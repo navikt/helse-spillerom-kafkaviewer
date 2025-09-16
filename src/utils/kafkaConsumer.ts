@@ -103,106 +103,102 @@ export class KafkaConsumerService {
     }
 
     async readMessagesFromTopic(topic: string, maxMessages: number = 100): Promise<KafkaMessage[]> {
-        // Opprett ny consumer for hver request for å unngå tilstandsproblemer
+        // Opprett ny consumer og admin for hver request
+        const admin = this.kafka.admin()
         const consumer = this.kafka.consumer({ groupId: this.groupId })
 
         const messages: KafkaMessage[] = []
-        let messageCount = 0
 
         try {
-            const startTime = Date.now()
             // eslint-disable-next-line no-console
-            console.log(`Starter consumer for topic ${topic}, maxMessages: ${maxMessages}`)
+            console.log(`Starter konsument for topic ${topic}, ønsker ${maxMessages} meldinger`)
 
-            // Koble til consumer
-            await consumer.connect()
+            // Koble til admin og consumer
+            await Promise.all([admin.connect(), consumer.connect()])
+
+            // Hent topic metadata og offsets
+            const metadata = await admin.fetchTopicMetadata({ topics: [topic] })
+            const topicData = metadata.topics[0]
+
+            if (!topicData) {
+                throw new Error(`Topic '${topic}' ikke funnet`)
+            }
+
+            const offsets = await admin.fetchTopicOffsets(topic)
             // eslint-disable-next-line no-console
-            console.log(`Consumer tilkoblet i ${Date.now() - startTime}ms`)
+            console.log('Topic offsets:', offsets)
 
-            // Hent metadata for å sjekke topic og partisjoner
-            const admin = this.kafka.admin()
-            await admin.connect()
+            // Beregn hvor vi skal starte lesing for å få de siste N meldingene
+            const seekPositions: Array<{ topic: string; partition: number; offset: string }> = []
 
-            let topicMetadata
-            try {
-                const metadata = await admin.fetchTopicMetadata({ topics: [topic] })
-                topicMetadata = metadata.topics[0]
+            for (const partitionOffset of offsets) {
+                const { partition, high, low } = partitionOffset
+                const totalMessages = parseInt(high) - parseInt(low)
 
-                if (!topicMetadata) {
-                    throw new Error(`Topic '${topic}' ikke funnet`)
+                if (totalMessages > 0) {
+                    // Beregn hvor mange meldinger vi vil ha fra denne partisjonen
+                    const messagesFromPartition = Math.ceil(
+                        maxMessages / offsets.filter((o) => parseInt(o.high) > parseInt(o.low)).length,
+                    )
+                    const startOffset = Math.max(parseInt(low), parseInt(high) - messagesFromPartition)
+
+                    seekPositions.push({
+                        topic,
+                        partition,
+                        offset: startOffset.toString(),
+                    })
+
+                    // eslint-disable-next-line no-console
+                    console.log(
+                        `Partition ${partition}: vil lese fra offset ${startOffset} til ${high} (${parseInt(high) - startOffset} meldinger)`,
+                    )
                 }
-
-                // eslint-disable-next-line no-console
-                console.log(`Topic metadata for ${topic}:`, JSON.stringify(topicMetadata, null, 2))
-            } finally {
-                await admin.disconnect()
             }
 
-            // Subscribe til topic - hent alle meldinger, sorter og ta siste N
-            const subscribeStart = Date.now()
-            await consumer.subscribe({ topic, fromBeginning: true })
-            // eslint-disable-next-line no-console
-            console.log(`Subscribe ferdig i ${Date.now() - subscribeStart}ms`)
-
-            // Hent offset-info for å beregne antall meldinger
-            const admin2 = this.kafka.admin()
-            await admin2.connect()
-            let totalMessagesInTopic = 0
-
-            try {
-                const offsets = await admin2.fetchTopicOffsets(topic)
-                totalMessagesInTopic = offsets.reduce((sum, o) => sum + parseInt(o.high) - parseInt(o.low), 0)
-
+            if (seekPositions.length === 0) {
                 // eslint-disable-next-line no-console
-                console.log(`Total meldinger i topic: ${totalMessagesInTopic}`)
-            } finally {
-                await admin2.disconnect()
+                console.log('Ingen meldinger funnet i topic')
+                return []
             }
 
-            // Optimaliser basert på antall meldinger i topic
-            const shouldReadAll = totalMessagesInTopic <= maxMessages * 2 // Hvis topic er liten, les alt
-            let timeoutMs = 2000 // Standard timeout
+            // Subscribe til topic
+            await consumer.subscribe({ topic, fromBeginning: false })
 
-            if (shouldReadAll) {
-                // Les alle meldinger hvis topic er liten
-                timeoutMs = Math.min(1000 + totalMessagesInTopic * 100, 3000)
-                // eslint-disable-next-line no-console
-                console.log(
-                    `Topic har ${totalMessagesInTopic} meldinger - leser alle meldinger (timeout: ${timeoutMs}ms)`,
-                )
-            } else {
-                // For store topics, bruk kortere timeout og stopp tidligere
-                timeoutMs = 2000
-                // eslint-disable-next-line no-console
-                console.log(
-                    `Topic har ${totalMessagesInTopic} meldinger - leser så mange som mulig på ${timeoutMs}ms, sorterer og tar siste ${maxMessages}`,
-                )
-            }
-
-            // Samle meldinger med smart timeout
-            const messageCollectionStart = Date.now()
-            await new Promise<void>((resolve, reject) => {
+            // Start consumer og vent på at den blir tildelt partisjoner
+            let hasStarted = false
+            const messagesPromise = new Promise<void>((resolve, reject) => {
                 let hasResolved = false
+                let messageCount = 0
 
+                // Timeout for safety
                 const timeout = setTimeout(() => {
                     if (!hasResolved) {
                         hasResolved = true
                         // eslint-disable-next-line no-console
-                        console.log(`Timeout nådd (${timeoutMs}ms). Hentet ${messages.length} meldinger`)
+                        console.log(`Timeout nådd. Hentet ${messages.length} meldinger`)
                         resolve()
                     }
-                }, timeoutMs)
+                }, 1000)
 
                 consumer
                     .run({
-                        partitionsConsumedConcurrently: Math.min(topicMetadata.partitions.length, 5),
+                        partitionsConsumedConcurrently: seekPositions.length,
                         eachMessage: async ({ partition, message }) => {
-                            if (hasResolved) {
-                                return
+                            // Seek til riktig posisjon når vi starter (bare første gang per partisjon)
+                            if (!hasStarted) {
+                                hasStarted = true
+                                // eslint-disable-next-line no-console
+                                console.log('Consumer startet, setter seek-posisjoner...')
+
+                                // Seek til riktige posisjoner
+                                for (const seekPos of seekPositions) {
+                                    await consumer.seek(seekPos)
+                                    // eslint-disable-next-line no-console
+                                    console.log(`Seeket til partition ${seekPos.partition}, offset ${seekPos.offset}`)
+                                }
                             }
 
-                            // For små topics, les alle. For store topics, stopp ved maxMessages
-                            if (!shouldReadAll && messageCount >= maxMessages) {
+                            if (hasResolved || messageCount >= maxMessages) {
                                 return
                             }
 
@@ -220,18 +216,10 @@ export class KafkaConsumerService {
 
                             // eslint-disable-next-line no-console
                             console.log(
-                                `Lastet melding ${messageCount}${shouldReadAll ? `/${totalMessagesInTopic}` : `/${maxMessages}`} fra partition ${partition}, offset ${message.offset}`,
+                                `Hentet melding ${messageCount}/${maxMessages} fra partition ${partition}, offset ${message.offset}`,
                             )
 
-                            // For store topics, stopp når vi har maxMessages
-                            if (!shouldReadAll && messageCount >= maxMessages && !hasResolved) {
-                                hasResolved = true
-                                clearTimeout(timeout)
-                                resolve()
-                            }
-
-                            // For små topics, stopp når vi har lest alt
-                            if (shouldReadAll && messageCount >= totalMessagesInTopic && !hasResolved) {
+                            if (messageCount >= maxMessages && !hasResolved) {
                                 hasResolved = true
                                 clearTimeout(timeout)
                                 resolve()
@@ -240,7 +228,7 @@ export class KafkaConsumerService {
                     })
                     .catch((error) => {
                         // eslint-disable-next-line no-console
-                        console.error('Feil ved lesing av Kafka meldinger:', error)
+                        console.error('Consumer error:', error)
                         if (!hasResolved) {
                             hasResolved = true
                             clearTimeout(timeout)
@@ -249,34 +237,25 @@ export class KafkaConsumerService {
                     })
             })
 
-            // eslint-disable-next-line no-console
-            console.log(
-                `Message collection ferdig i ${Date.now() - messageCollectionStart}ms, hentet ${messages.length} meldinger`,
-            )
+            await messagesPromise
         } finally {
-            // Koble fra consumer
-            const disconnectStart = Date.now()
+            // Koble fra consumer og admin
             try {
-                await consumer.disconnect()
+                await Promise.all([consumer.disconnect(), admin.disconnect()])
                 // eslint-disable-next-line no-console
-                console.log(`Consumer frakoblet i ${Date.now() - disconnectStart}ms`)
-            } catch (disconnectError) {
+                console.log('Consumer og admin frakoblet')
+            } catch (error) {
                 // eslint-disable-next-line no-console
-                console.log('Feil ved frakobling av consumer:', disconnectError)
+                console.error('Feil ved frakobling:', error)
             }
         }
 
-        // eslint-disable-next-line no-console
-        console.log(`Hentet totalt ${messages.length} meldinger`)
-
-        // Sorter meldinger etter timestamp (nyeste først)
+        // Sorter etter timestamp (nyeste først) og returner
         messages.sort((a, b) => parseInt(b.timestamp) - parseInt(a.timestamp))
-
-        // Returner de siste N meldingene
         const result = messages.slice(0, maxMessages)
 
         // eslint-disable-next-line no-console
-        console.log(`Returnerer ${result.length} meldinger (siste ${maxMessages} etter sortering)`)
+        console.log(`Returnerer ${result.length} meldinger sortert etter timestamp`)
 
         return result
     }
