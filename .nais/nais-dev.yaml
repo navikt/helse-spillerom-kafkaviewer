@@ -22,6 +22,8 @@ spec:
     http:
       path: /api/internal/preStop
       port: 3000
+  kafka:
+    pool: nav-dev
   resources:
     limits:
       memory: 350Mi
