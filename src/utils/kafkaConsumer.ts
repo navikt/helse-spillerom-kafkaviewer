@@ -139,66 +139,46 @@ export class KafkaConsumerService {
                 await admin.disconnect()
             }
 
-            // Start fra slutten for å få nyeste meldinger
+            // Subscribe til topic - starter fra siste committed offset
             await this.consumer!.subscribe({ topic, fromBeginning: true })
-
-            // Sett offset til slutten først, deretter les bakover for å få nyeste meldinger
-            const assignment = topicMetadata.partitions.map((p) => ({
-                topic,
-                partition: p.partitionId,
-            }))
-
-            // Få offsets for alle partisjoner
-            const admin2 = this.kafka.admin()
-            await admin2.connect()
-
-            try {
-                const offsets = await admin2.fetchTopicOffsets(topic)
-
-                // Start consumer og sett offset for hver partisjon
-                for (const a of assignment) {
-                    const partitionOffset = offsets.find((o) => o.partition === a.partition)
-                    // Start fra max(high - maxMessages, low) for å få siste N meldinger
-                    const high = parseInt(partitionOffset?.high || '0')
-                    const low = parseInt(partitionOffset?.low || '0')
-                    const startOffset = Math.max(high - Math.ceil(maxMessages / assignment.length), low)
-
-                    await this.consumer!.seek({
-                        topic: a.topic,
-                        partition: a.partition,
-                        offset: startOffset.toString(),
-                    })
-                }
-            } finally {
-                await admin2.disconnect()
-            }
 
             const run = async (): Promise<void> => {
                 await this.consumer!.run({
-                    eachMessage: async ({ partition, message }: EachMessagePayload) => {
-                        if (messageCount >= maxMessages) {
-                            return
-                        }
-
-                        const kafkaMessage: KafkaMessage = {
-                            key: message.key?.toString() || null,
-                            value: message.value?.toString() || null,
-                            headers: this.parseHeaders(message.headers),
-                            partition,
-                            offset: message.offset,
-                            timestamp: message.timestamp,
-                        }
-
-                        messages.push(kafkaMessage)
-                        messageCount++
-
+                    partitionsConsumedConcurrently: topicMetadata.partitions.length,
+                    eachBatch: async ({ batch, resolveOffset, heartbeat }) => {
                         // eslint-disable-next-line no-console
-                        console.log(
-                            `Lastet melding ${messageCount}/${maxMessages} fra partition ${partition}, offset ${message.offset}`,
-                        )
+                        console.log(`Behandler batch fra partition ${batch.partition} med ${batch.messages.length} meldinger`)
 
-                        if (messageCount >= maxMessages) {
-                            await this.consumer!.stop()
+                        for (const message of batch.messages) {
+                            if (messageCount >= maxMessages) {
+                                await this.consumer!.stop()
+                                return
+                            }
+
+                            const kafkaMessage: KafkaMessage = {
+                                key: message.key?.toString() || null,
+                                value: message.value?.toString() || null,
+                                headers: this.parseHeaders(message.headers),
+                                partition: batch.partition,
+                                offset: message.offset,
+                                timestamp: message.timestamp,
+                            }
+
+                            messages.push(kafkaMessage)
+                            messageCount++
+
+                            // eslint-disable-next-line no-console
+                            console.log(
+                                `Lastet melding ${messageCount}/${maxMessages} fra partition ${batch.partition}, offset ${message.offset}`,
+                            )
+
+                            if (messageCount >= maxMessages) {
+                                await this.consumer!.stop()
+                                return
+                            }
+
+                            resolveOffset(message.offset)
+                            await heartbeat()
                         }
                     },
                 })
