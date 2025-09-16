@@ -1,0 +1,105 @@
+on:
+  workflow_call:
+    inputs:
+      app:
+        required: true
+        type: string
+      base-path:
+        required: true
+        type: string
+
+jobs:
+  codeql-analyse:
+    if: github.ref_name == 'main' || startsWith(github.ref_name, 'dev-')
+    name: codeql-analyse
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          queries: security-and-quality
+          languages: 'javascript'
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript"
+
+  test-and-verify:
+    name: Test and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: navikt/helse-spillerom/actions/npm-cached@main
+        with:
+          NPM_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: npm run prettier:check
+      - run: npm run lint
+      - run: npm run test
+
+  build-dependabot:
+    if: github.actor == 'dependabot[bot]'
+    name: Build for dependabot PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: navikt/helse-spillerom/actions/npm-cached@main
+        with:
+          NPM_AUTH_TOKEN: ${{ secrets.READER_TOKEN }}
+      - name: Copy appropriate env file to root
+        shell: bash
+        run: |
+          echo "Copying .nais/envs/.env.prod..."
+          cp .nais/envs/.env.prod .env.production
+      - id: npm-build
+        shell: bash
+        run: npm run build
+        env:
+          NEXT_PUBLIC_VERSION: ${{ github.sha }}
+
+  build-dev:
+    if: ${{ !startsWith(github.ref_name, 'demo') && github.actor != 'dependabot[bot]'}}
+    name: Build for dev
+    runs-on: ubuntu-latest
+    permissions:
+      packages: "write"
+      contents: "read"
+      id-token: "write"
+    outputs:
+      image: ${{ steps.build-and-publish.outputs.image }}
+    steps:
+      - uses: navikt/helse-spillerom/actions/next-to-docker@main
+        id: build-and-publish
+        with:
+          app: ${{ inputs.app }}
+          env: dev
+          identity_provider: ${{ secrets.NAIS_WORKLOAD_IDENTITY_PROVIDER }}
+          project_id: ${{ vars.NAIS_MANAGEMENT_PROJECT_ID }}
+          NPM_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+  deploy-dev:
+    if: ${{ !startsWith(github.ref_name, 'demo') }}
+    name: Deploy to dev
+    environment:
+      name: development
+      url: ${{ steps.get-ingress.outputs.result }}
+    runs-on: ubuntu-latest
+    needs: [test-and-verify, build-dev]
+    steps:
+      - uses: actions/checkout@v4
+      - id: get-ingress
+        uses: mikefarah/yq@v4.45.1
+        with:
+          cmd: yq '.spec.ingresses[0]' .nais/nais-dev.yaml
+      - uses: nais/deploy/actions/deploy@v2
+        env:
+          CLUSTER: dev-gcp
+          RESOURCE: .nais/nais-dev.yaml
+          VAR: image=${{ needs.build-dev.outputs.image }},version=${{ github.sha }}
