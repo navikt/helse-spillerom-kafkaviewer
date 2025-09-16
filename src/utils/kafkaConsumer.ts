@@ -113,7 +113,7 @@ export class KafkaConsumerService {
             const startTime = Date.now()
             // eslint-disable-next-line no-console
             console.log(`Starter consumer for topic ${topic}, maxMessages: ${maxMessages}`)
-            
+
             // Koble til consumer
             await consumer.connect()
             // eslint-disable-next-line no-console
@@ -148,41 +148,42 @@ export class KafkaConsumerService {
             const admin2 = this.kafka.admin()
             await admin2.connect()
             let totalMessagesInTopic = 0
-            
+
             try {
                 const offsets = await admin2.fetchTopicOffsets(topic)
-                totalMessagesInTopic = offsets.reduce(
-                    (sum, o) => sum + parseInt(o.high) - parseInt(o.low), 
-                    0
-                )
-                
+                totalMessagesInTopic = offsets.reduce((sum, o) => sum + parseInt(o.high) - parseInt(o.low), 0)
+
                 // eslint-disable-next-line no-console
                 console.log(`Total meldinger i topic: ${totalMessagesInTopic}`)
             } finally {
                 await admin2.disconnect()
             }
-            
+
             // Optimaliser basert på antall meldinger i topic
-            let shouldReadAll = totalMessagesInTopic <= maxMessages * 2 // Hvis topic er liten, les alt
+            const shouldReadAll = totalMessagesInTopic <= maxMessages * 2 // Hvis topic er liten, les alt
             let timeoutMs = 2000 // Standard timeout
-            
+
             if (shouldReadAll) {
                 // Les alle meldinger hvis topic er liten
                 timeoutMs = Math.min(1000 + totalMessagesInTopic * 100, 3000)
                 // eslint-disable-next-line no-console
-                console.log(`Topic har ${totalMessagesInTopic} meldinger - leser alle meldinger (timeout: ${timeoutMs}ms)`)
+                console.log(
+                    `Topic har ${totalMessagesInTopic} meldinger - leser alle meldinger (timeout: ${timeoutMs}ms)`,
+                )
             } else {
                 // For store topics, bruk kortere timeout og stopp tidligere
                 timeoutMs = 2000
                 // eslint-disable-next-line no-console
-                console.log(`Topic har ${totalMessagesInTopic} meldinger - leser så mange som mulig på ${timeoutMs}ms, sorterer og tar siste ${maxMessages}`)
+                console.log(
+                    `Topic har ${totalMessagesInTopic} meldinger - leser så mange som mulig på ${timeoutMs}ms, sorterer og tar siste ${maxMessages}`,
+                )
             }
 
             // Samle meldinger med smart timeout
             const messageCollectionStart = Date.now()
             await new Promise<void>((resolve, reject) => {
                 let hasResolved = false
-                
+
                 const timeout = setTimeout(() => {
                     if (!hasResolved) {
                         hasResolved = true
@@ -199,7 +200,7 @@ export class KafkaConsumerService {
                             if (hasResolved) {
                                 return
                             }
-                            
+
                             // For små topics, les alle. For store topics, stopp ved maxMessages
                             if (!shouldReadAll && messageCount >= maxMessages) {
                                 return
@@ -228,7 +229,7 @@ export class KafkaConsumerService {
                                 clearTimeout(timeout)
                                 resolve()
                             }
-                            
+
                             // For små topics, stopp når vi har lest alt
                             if (shouldReadAll && messageCount >= totalMessagesInTopic && !hasResolved) {
                                 hasResolved = true
@@ -247,9 +248,11 @@ export class KafkaConsumerService {
                         }
                     })
             })
-            
+
             // eslint-disable-next-line no-console
-            console.log(`Message collection ferdig i ${Date.now() - messageCollectionStart}ms, hentet ${messages.length} meldinger`)
+            console.log(
+                `Message collection ferdig i ${Date.now() - messageCollectionStart}ms, hentet ${messages.length} meldinger`,
+            )
         } finally {
             // Koble fra consumer
             const disconnectStart = Date.now()
@@ -265,13 +268,13 @@ export class KafkaConsumerService {
 
         // eslint-disable-next-line no-console
         console.log(`Hentet totalt ${messages.length} meldinger`)
-        
-        // Sorter meldinger etter timestamp (nyeste først) 
+
+        // Sorter meldinger etter timestamp (nyeste først)
         messages.sort((a, b) => parseInt(b.timestamp) - parseInt(a.timestamp))
-        
+
         // Returner de siste N meldingene
         const result = messages.slice(0, maxMessages)
-        
+
         // eslint-disable-next-line no-console
         console.log(`Returnerer ${result.length} meldinger (siste ${maxMessages} etter sortering)`)
 
