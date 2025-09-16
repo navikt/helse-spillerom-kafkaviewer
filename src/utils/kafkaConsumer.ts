@@ -209,7 +209,7 @@ export class KafkaConsumerService {
             await new Promise<void>((resolve, reject) => {
                 const timeout = setTimeout(() => {
                     reject(new Error('Timeout ved venting på partisjon-tildeling'))
-                }, 500) // Redusert fra 5s til 3s
+                }, 3000) 
 
                 consumer.on('consumer.group_join', async () => {
                     clearTimeout(timeout)
