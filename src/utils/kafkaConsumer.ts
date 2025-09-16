@@ -31,7 +31,7 @@ interface KafkaStore {
 }
 
 class KafkaConsumerSingleton {
-    private kafka: Kafka
+    private kafka: Kafka | null = null
     private consumer: Consumer | null = null
     private store: KafkaStore = {
         messages: new Map(),
@@ -44,15 +44,31 @@ class KafkaConsumerSingleton {
     constructor() {
         // Fast consumer group for konsistent oppførsel
         this.groupId = 'spillerom-kafkaviewer-singleton'
+    }
+
+    private getKafkaConfig(): Kafka {
+        if (this.kafka) {
+            return this.kafka
+        }
+
+        // Hent miljøvariabler runtime, ikke ved build-tid
+        const brokers = process.env.KAFKA_BROKERS?.split(',') || []
+        const ca = process.env.KAFKA_CA
+        const key = process.env.KAFKA_PRIVATE_KEY
+        const cert = process.env.KAFKA_CERTIFICATE
+
+        if (!brokers.length || !ca || !key || !cert) {
+            throw new Error('Manglende Kafka miljøvariabler (KAFKA_BROKERS, KAFKA_CA, KAFKA_PRIVATE_KEY, KAFKA_CERTIFICATE)')
+        }
 
         this.kafka = new Kafka({
             clientId: 'spillerom-kafkaviewer-singleton',
-            brokers: process.env.KAFKA_BROKERS!.split(','),
+            brokers,
             ssl: {
                 rejectUnauthorized: true,
-                ca: [process.env.KAFKA_CA!],
-                key: process.env.KAFKA_PRIVATE_KEY!,
-                cert: process.env.KAFKA_CERTIFICATE!,
+                ca: [ca],
+                key,
+                cert,
             },
             retry: {
                 initialRetryTime: 100,
@@ -61,6 +77,8 @@ class KafkaConsumerSingleton {
             requestTimeout: 30000,
             connectionTimeout: 3000,
         })
+
+        return this.kafka
     }
 
     async startPolling(topics: string[] = ['speilvendt.spillerom-behandlinger']): Promise<void> {
@@ -74,7 +92,8 @@ class KafkaConsumerSingleton {
             this.store.isRunning = true
 
             // Opprett consumer
-            this.consumer = this.kafka.consumer({
+            const kafka = this.getKafkaConfig()
+            this.consumer = kafka.consumer({
                 groupId: this.groupId,
                 sessionTimeout: 30000,
                 rebalanceTimeout: 60000,
@@ -116,7 +135,8 @@ class KafkaConsumerSingleton {
 
         for (const topic of topics) {
             try {
-                const admin = this.kafka.admin()
+                const kafka = this.getKafkaConfig()
+                const admin = kafka.admin()
                 await admin.connect()
 
                 const offsets = await admin.fetchTopicOffsets(topic)
@@ -181,7 +201,8 @@ class KafkaConsumerSingleton {
     }
 
     async getTopicMetadata(topic: string): Promise<TopicMetadata> {
-        const admin = this.kafka.admin()
+        const kafka = this.getKafkaConfig()
+        const admin = kafka.admin()
         await admin.connect()
 
         try {
