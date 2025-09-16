@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test-and-verify, build-dev]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: get-ingress
         uses: mikefarah/yq@v4.45.1
         with:
