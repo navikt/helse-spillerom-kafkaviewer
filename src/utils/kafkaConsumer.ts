@@ -9,11 +9,27 @@ export interface KafkaMessage {
     timestamp: string
 }
 
+export interface TopicMetadata {
+    partitions: PartitionMetadata[]
+    totalMessages: number
+}
+
+export interface PartitionMetadata {
+    partition: number
+    highWatermark: string
+    lowWatermark: string
+    messageCount: number
+}
+
 export class KafkaConsumerService {
     private kafka: Kafka
     private consumer: Consumer | null = null
+    public readonly groupId: string
 
     constructor() {
+        // Lag en unik consumer group for hver request for å unngå offset-konflikter
+        this.groupId = `spillerom-kafkaviewer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+
         this.kafka = new Kafka({
             clientId: 'spillerom-kafkaviewer',
             brokers: process.env.KAFKA_BROKERS!.split(','),
@@ -38,7 +54,7 @@ export class KafkaConsumerService {
             return
         }
 
-        this.consumer = this.kafka.consumer({ groupId: 'spillerom-kafkaviewer-group' })
+        this.consumer = this.kafka.consumer({ groupId: this.groupId })
         await this.consumer.connect()
     }
 
@@ -46,6 +62,51 @@ export class KafkaConsumerService {
         if (this.consumer) {
             await this.consumer.disconnect()
             this.consumer = null
+        }
+    }
+
+    async getTopicMetadata(topic: string): Promise<TopicMetadata> {
+        const admin = this.kafka.admin()
+        await admin.connect()
+
+        try {
+            const metadata = await admin.fetchTopicMetadata({ topics: [topic] })
+            const topicMetadata = metadata.topics[0]
+
+            if (!topicMetadata) {
+                throw new Error(`Topic '${topic}' ikke funnet`)
+            }
+
+            const partitions: PartitionMetadata[] = []
+            let totalMessages = 0
+
+            // Hent offsetinformasjon for alle partisjoner
+            for (const partition of topicMetadata.partitions) {
+                const partitionId = partition.partitionId
+
+                // Hent high og low watermarks
+                const offsets = await admin.fetchTopicOffsets(topic)
+                const partitionOffset = offsets.find((o) => o.partition === partitionId)
+
+                if (partitionOffset) {
+                    const messageCount = parseInt(partitionOffset.high) - parseInt(partitionOffset.low)
+                    totalMessages += messageCount
+
+                    partitions.push({
+                        partition: partitionId,
+                        highWatermark: partitionOffset.high,
+                        lowWatermark: partitionOffset.low,
+                        messageCount,
+                    })
+                }
+            }
+
+            return {
+                partitions,
+                totalMessages,
+            }
+        } finally {
+            await admin.disconnect()
         }
     }
 
@@ -59,23 +120,58 @@ export class KafkaConsumerService {
         let hasError = false
 
         try {
-            // Først sjekk om topicet eksisterer
+            // Hent metadata for å sjekke topic og partisjoner
             const admin = this.kafka.admin()
             await admin.connect()
 
+            let topicMetadata
             try {
                 const metadata = await admin.fetchTopicMetadata({ topics: [topic] })
+                topicMetadata = metadata.topics[0]
+
+                if (!topicMetadata) {
+                    throw new Error(`Topic '${topic}' ikke funnet`)
+                }
+
                 // eslint-disable-next-line no-console
-                console.log(`Topic metadata for ${topic}:`, JSON.stringify(metadata, null, 2))
-            } catch (metadataError) {
-                // eslint-disable-next-line no-console
-                console.error(`Feil ved henting av topic metadata for ${topic}:`, metadataError)
-                throw new Error(`Topic '${topic}' eksisterer ikke eller er ikke tilgjengelig`)
+                console.log(`Topic metadata for ${topic}:`, JSON.stringify(topicMetadata, null, 2))
             } finally {
                 await admin.disconnect()
             }
 
-            await this.consumer!.subscribe({ topic, fromBeginning: false })
+            // Start fra slutten for å få nyeste meldinger
+            await this.consumer!.subscribe({ topic, fromBeginning: true })
+
+            // Sett offset til slutten først, deretter les bakover for å få nyeste meldinger
+            const assignment = topicMetadata.partitions.map((p) => ({
+                topic,
+                partition: p.partitionId,
+            }))
+
+            // Få offsets for alle partisjoner
+            const admin2 = this.kafka.admin()
+            await admin2.connect()
+
+            try {
+                const offsets = await admin2.fetchTopicOffsets(topic)
+
+                // Start consumer og sett offset for hver partisjon
+                for (const a of assignment) {
+                    const partitionOffset = offsets.find((o) => o.partition === a.partition)
+                    // Start fra max(high - maxMessages, low) for å få siste N meldinger
+                    const high = parseInt(partitionOffset?.high || '0')
+                    const low = parseInt(partitionOffset?.low || '0')
+                    const startOffset = Math.max(high - Math.ceil(maxMessages / assignment.length), low)
+
+                    await this.consumer!.seek({
+                        topic: a.topic,
+                        partition: a.partition,
+                        offset: startOffset.toString(),
+                    })
+                }
+            } finally {
+                await admin2.disconnect()
+            }
 
             const run = async (): Promise<void> => {
                 await this.consumer!.run({
@@ -96,6 +192,11 @@ export class KafkaConsumerService {
                         messages.push(kafkaMessage)
                         messageCount++
 
+                        // eslint-disable-next-line no-console
+                        console.log(
+                            `Lastet melding ${messageCount}/${maxMessages} fra partition ${partition}, offset ${message.offset}`,
+                        )
+
                         if (messageCount >= maxMessages) {
                             await this.consumer!.stop()
                         }
@@ -104,29 +205,34 @@ export class KafkaConsumerService {
             }
 
             // Start reading messages
-            run().catch((error) => {
+            const runPromise = run().catch((error) => {
                 // eslint-disable-next-line no-console
                 console.error('Feil ved lesing av Kafka meldinger:', error)
                 hasError = true
             })
 
             // Wait for messages to be collected or timeout
-            await new Promise<void>((resolve) => {
-                const timeout = setTimeout(() => {
-                    resolve()
-                }, 15000) // 15 sekunder timeout
-
-                const checkMessages = () => {
-                    if (hasError || messageCount >= maxMessages || messages.length > 0) {
-                        clearTimeout(timeout)
+            await Promise.race([
+                runPromise,
+                new Promise<void>((resolve) => {
+                    const timeout = setTimeout(() => {
+                        // eslint-disable-next-line no-console
+                        console.log(`Timeout nådd. Hentet ${messages.length} meldinger`)
                         resolve()
-                    } else {
-                        setTimeout(checkMessages, 100)
-                    }
-                }
+                    }, 15000) // 15 sekunder timeout
 
-                checkMessages()
-            })
+                    const checkMessages = () => {
+                        if (hasError || messageCount >= maxMessages) {
+                            clearTimeout(timeout)
+                            resolve()
+                        } else {
+                            setTimeout(checkMessages, 100)
+                        }
+                    }
+
+                    checkMessages()
+                }),
+            ])
 
             if (hasError) {
                 throw new Error('Feil oppstod under lesing av meldinger')
@@ -137,7 +243,10 @@ export class KafkaConsumerService {
             throw error
         }
 
-        return messages
+        // Sorter meldinger etter timestamp (nyeste først)
+        messages.sort((a, b) => parseInt(b.timestamp) - parseInt(a.timestamp))
+
+        return messages.slice(0, maxMessages)
     }
 
     private parseHeaders(headers: Record<string, unknown> | undefined): Record<string, string | Buffer | undefined> {
