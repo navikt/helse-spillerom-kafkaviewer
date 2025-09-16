@@ -54,7 +54,7 @@ export class KafkaConsumerService {
 
         const run = async (): Promise<void> => {
             await this.consumer!.run({
-                eachMessage: async ({ topic: messageTopic, partition, message }: EachMessagePayload) => {
+                eachMessage: async ({ partition, message }: EachMessagePayload) => {
                     if (messageCount >= maxMessages) {
                         return
                     }
@@ -80,6 +80,7 @@ export class KafkaConsumerService {
 
         // Start reading messages
         run().catch((error) => {
+            // eslint-disable-next-line no-console
             console.error('Feil ved lesing av Kafka meldinger:', error)
         })
 
@@ -104,13 +105,13 @@ export class KafkaConsumerService {
         return messages
     }
 
-    private parseHeaders(headers: any): Record<string, string | Buffer | undefined> {
+    private parseHeaders(headers: Record<string, unknown> | undefined): Record<string, string | Buffer | undefined> {
         const parsedHeaders: Record<string, string | Buffer | undefined> = {}
-        
+
         if (!headers) {
             return parsedHeaders
         }
-        
+
         for (const [key, value] of Object.entries(headers)) {
             if (value) {
                 // Prøv å parse som string, fallback til Buffer
@@ -120,7 +121,7 @@ export class KafkaConsumerService {
                     } else if (typeof value === 'string') {
                         parsedHeaders[key] = value
                     } else if (Array.isArray(value)) {
-                        parsedHeaders[key] = value.map(v => Buffer.isBuffer(v) ? v.toString() : v).join(', ')
+                        parsedHeaders[key] = value.map((v) => (Buffer.isBuffer(v) ? v.toString() : v)).join(', ')
                     } else {
                         parsedHeaders[key] = String(value)
                     }

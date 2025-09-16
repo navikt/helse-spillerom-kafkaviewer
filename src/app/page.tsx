@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { Heading, Button, TextField, Table, BodyShort, Loader } from '@navikt/ds-react'
+
 import { KafkaMessage } from '@/utils/kafkaConsumer'
 
 interface KafkaResponse {
@@ -19,10 +20,13 @@ const Page = () => {
     const fetchMessages = async () => {
         setLoading(true)
         try {
-            const response = await fetch(`/api/kafka-messages?topic=${encodeURIComponent(topic)}&maxMessages=${maxMessages}`)
+            const response = await fetch(
+                `/api/kafka-messages?topic=${encodeURIComponent(topic)}&maxMessages=${maxMessages}`,
+            )
             const data: KafkaResponse = await response.json()
             setMessages(data.messages)
         } catch (error) {
+            // eslint-disable-next-line no-console
             console.error('Feil ved henting av meldinger:', error)
         } finally {
             setLoading(false)
@@ -32,14 +36,9 @@ const Page = () => {
     return (
         <div className="space-y-6 p-6">
             <Heading size="xlarge">Spillerom kafka viewer</Heading>
-            
-            <div className="flex gap-4 items-end">
-                <TextField
-                    label="Topic"
-                    value={topic}
-                    onChange={(e) => setTopic(e.target.value)}
-                    className="w-80"
-                />
+
+            <div className="flex items-end gap-4">
+                <TextField label="Topic" value={topic} onChange={(e) => setTopic(e.target.value)} className="w-80" />
                 <TextField
                     label="Maks antall meldinger"
                     type="number"
@@ -71,17 +70,17 @@ const Page = () => {
                             {messages.map((message, index) => (
                                 <Table.Row key={index}>
                                     <Table.DataCell>
-                                        <pre className="text-xs bg-gray-100 p-2 rounded max-w-xs overflow-auto">
+                                        <pre className="bg-gray-100 max-w-xs overflow-auto rounded p-2 text-xs">
                                             {message.key || 'null'}
                                         </pre>
                                     </Table.DataCell>
                                     <Table.DataCell>
-                                        <pre className="text-xs bg-gray-100 p-2 rounded max-w-md overflow-auto">
+                                        <pre className="bg-gray-100 max-w-md overflow-auto rounded p-2 text-xs">
                                             {message.value || 'null'}
                                         </pre>
                                     </Table.DataCell>
                                     <Table.DataCell>
-                                        <pre className="text-xs bg-gray-100 p-2 rounded max-w-xs overflow-auto">
+                                        <pre className="bg-gray-100 max-w-xs overflow-auto rounded p-2 text-xs">
                                             {JSON.stringify(message.headers, null, 2)}
                                         </pre>
                                     </Table.DataCell>
