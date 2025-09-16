@@ -162,82 +162,78 @@ export class KafkaConsumerService {
             }
 
             // Subscribe til topic
-            await consumer.subscribe({ topic, fromBeginning: false })
+            await consumer.subscribe({ topic, fromBeginning: true })
 
-            // Start consumer og vent på at den blir tildelt partisjoner
-            let hasStarted = false
-            const messagesPromise = new Promise<void>((resolve, reject) => {
-                let hasResolved = false
-                let messageCount = 0
-
-                // Timeout for safety
-                const timeout = setTimeout(() => {
-                    if (!hasResolved) {
-                        hasResolved = true
-                        // eslint-disable-next-line no-console
-                        console.log(`Timeout nådd. Hentet ${messages.length} meldinger`)
-                        resolve()
+            // Start consumer først
+            consumer.run({
+                partitionsConsumedConcurrently: seekPositions.length,
+                eachMessage: async ({ partition, message }) => {
+                    if (messages.length >= maxMessages) {
+                        return
                     }
-                }, 1000)
 
-                consumer
-                    .run({
-                        partitionsConsumedConcurrently: seekPositions.length,
-                        eachMessage: async ({ partition, message }) => {
-                            // Seek til riktig posisjon når vi starter (bare første gang per partisjon)
-                            if (!hasStarted) {
-                                hasStarted = true
-                                // eslint-disable-next-line no-console
-                                console.log('Consumer startet, setter seek-posisjoner...')
+                    const kafkaMessage: KafkaMessage = {
+                        key: message.key?.toString() || null,
+                        value: message.value?.toString() || null,
+                        headers: this.parseHeaders(message.headers),
+                        partition,
+                        offset: message.offset,
+                        timestamp: message.timestamp,
+                    }
 
-                                // Seek til riktige posisjoner
-                                for (const seekPos of seekPositions) {
-                                    await consumer.seek(seekPos)
-                                    // eslint-disable-next-line no-console
-                                    console.log(`Seeket til partition ${seekPos.partition}, offset ${seekPos.offset}`)
-                                }
-                            }
+                    messages.push(kafkaMessage)
 
-                            if (hasResolved || messageCount >= maxMessages) {
-                                return
-                            }
-
-                            const kafkaMessage: KafkaMessage = {
-                                key: message.key?.toString() || null,
-                                value: message.value?.toString() || null,
-                                headers: this.parseHeaders(message.headers),
-                                partition,
-                                offset: message.offset,
-                                timestamp: message.timestamp,
-                            }
-
-                            messages.push(kafkaMessage)
-                            messageCount++
-
-                            // eslint-disable-next-line no-console
-                            console.log(
-                                `Hentet melding ${messageCount}/${maxMessages} fra partition ${partition}, offset ${message.offset}`,
-                            )
-
-                            if (messageCount >= maxMessages && !hasResolved) {
-                                hasResolved = true
-                                clearTimeout(timeout)
-                                resolve()
-                            }
-                        },
-                    })
-                    .catch((error) => {
-                        // eslint-disable-next-line no-console
-                        console.error('Consumer error:', error)
-                        if (!hasResolved) {
-                            hasResolved = true
-                            clearTimeout(timeout)
-                            reject(error)
-                        }
-                    })
+                    // eslint-disable-next-line no-console
+                    console.log(
+                        `Hentet melding ${messages.length}/${maxMessages} fra partition ${partition}, offset ${message.offset}`,
+                    )
+                },
             })
 
-            await messagesPromise
+            // Vent på at consumer'en blir tildelt partisjoner
+            await new Promise<void>((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error('Timeout ved venting på partisjon-tildeling'))
+                }, 5000)
+
+                consumer.on('consumer.group_join', async () => {
+                    clearTimeout(timeout)
+                    // eslint-disable-next-line no-console
+                    console.log('Consumer fikk tildelt partisjoner, setter seek-posisjoner...')
+
+                    try {
+                        // Seek til riktige posisjoner
+                        for (const seekPos of seekPositions) {
+                            await consumer.seek(seekPos)
+                            // eslint-disable-next-line no-console
+                            console.log(`Seeket til partition ${seekPos.partition}, offset ${seekPos.offset}`)
+                        }
+                        resolve()
+                    } catch (error) {
+                        reject(error)
+                    }
+                })
+            })
+
+            // Vent på meldinger med timeout
+            await new Promise<void>((resolve) => {
+                const timeout = setTimeout(() => {
+                    // eslint-disable-next-line no-console
+                    console.log(`Timeout nådd. Hentet ${messages.length} meldinger`)
+                    resolve()
+                }, 5000)
+
+                const checkMessages = () => {
+                    if (messages.length >= maxMessages) {
+                        clearTimeout(timeout)
+                        resolve()
+                    } else {
+                        setTimeout(checkMessages, 100)
+                    }
+                }
+
+                checkMessages()
+            })
         } finally {
             // Koble fra consumer og admin
             try {
