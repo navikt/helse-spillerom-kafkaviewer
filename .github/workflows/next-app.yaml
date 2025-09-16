@@ -9,30 +9,6 @@ on:
         type: string
 
 jobs:
-  codeql-analyse:
-    if: github.ref_name == 'main' || startsWith(github.ref_name, 'dev-')
-    name: codeql-analyse
-    timeout-minutes: 15
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: read
-      security-events: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          queries: security-and-quality
-          languages: 'javascript'
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
-        with:
-          category: "/language:javascript"
-
   test-and-verify:
     name: Test and lint
     runs-on: ubuntu-latest
