@@ -12,33 +12,29 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
         const consumerService = new KafkaConsumerService()
 
-        try {
-            // Hent metadata først for debugging
-            const metadata = await consumerService.getTopicMetadata(topic)
-            const metadataTime = Date.now()
+        // Hent metadata først for debugging
+        const metadata = await consumerService.getTopicMetadata(topic)
+        const metadataTime = Date.now()
 
-            // Deretter hent meldinger
-            const messages = await consumerService.readMessagesFromTopic(topic, maxMessages)
-            const endTime = Date.now()
+        // Deretter hent meldinger
+        const messages = await consumerService.readMessagesFromTopic(topic, maxMessages)
+        const endTime = Date.now()
 
-            return NextResponse.json({
-                topic,
-                messageCount: messages.length,
-                messages,
-                metadata: {
-                    ...metadata,
-                    requestDuration: {
-                        total: endTime - startTime,
-                        metadataFetch: metadataTime - startTime,
-                        messageFetch: endTime - metadataTime,
-                    },
-                    consumerGroup: consumerService.groupId,
-                    timestamp: new Date().toISOString(),
+        return NextResponse.json({
+            topic,
+            messageCount: messages.length,
+            messages,
+            metadata: {
+                ...metadata,
+                requestDuration: {
+                    total: endTime - startTime,
+                    metadataFetch: metadataTime - startTime,
+                    messageFetch: endTime - metadataTime,
                 },
-            })
-        } finally {
-            await consumerService.disconnect()
-        }
+                consumerGroup: consumerService.groupId,
+                timestamp: new Date().toISOString(),
+            },
+        })
     } catch (error) {
         // eslint-disable-next-line no-console
         console.error('Feil ved henting av Kafka meldinger:', error)

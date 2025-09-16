@@ -1,4 +1,4 @@
-import { Kafka, Consumer, EachMessagePayload } from 'kafkajs'
+import { Kafka, Consumer } from 'kafkajs'
 
 export interface KafkaMessage {
     key: string | null
@@ -50,19 +50,11 @@ export class KafkaConsumerService {
     }
 
     async connect(): Promise<void> {
-        if (this.consumer) {
-            return
-        }
-
-        this.consumer = this.kafka.consumer({ groupId: this.groupId })
-        await this.consumer.connect()
+        // Denne metoden brukes ikke lenger - consumer opprettes per request
     }
 
     async disconnect(): Promise<void> {
-        if (this.consumer) {
-            await this.consumer.disconnect()
-            this.consumer = null
-        }
+        // Denne metoden brukes ikke lenger - consumer opprettes per request
     }
 
     async getTopicMetadata(topic: string): Promise<TopicMetadata> {
@@ -111,15 +103,16 @@ export class KafkaConsumerService {
     }
 
     async readMessagesFromTopic(topic: string, maxMessages: number = 100): Promise<KafkaMessage[]> {
-        if (!this.consumer) {
-            await this.connect()
-        }
+        // Opprett ny consumer for hver request for å unngå tilstandsproblemer
+        const consumer = this.kafka.consumer({ groupId: this.groupId })
 
         const messages: KafkaMessage[] = []
         let messageCount = 0
-        let hasError = false
 
         try {
+            // Koble til consumer
+            await consumer.connect()
+
             // Hent metadata for å sjekke topic og partisjoner
             const admin = this.kafka.admin()
             await admin.connect()
@@ -139,19 +132,24 @@ export class KafkaConsumerService {
                 await admin.disconnect()
             }
 
-            // Subscribe til topic - starter fra siste committed offset
-            await this.consumer!.subscribe({ topic, fromBeginning: true })
+            // Subscribe til topic
+            await consumer.subscribe({ topic, fromBeginning: true })
 
-            const run = async (): Promise<void> => {
-                await this.consumer!.run({
-                    partitionsConsumedConcurrently: topicMetadata.partitions.length,
-                    eachBatch: async ({ batch, resolveOffset, heartbeat }) => {
-                        // eslint-disable-next-line no-console
-                        console.log(`Behandler batch fra partition ${batch.partition} med ${batch.messages.length} meldinger`)
+            // Samle meldinger med timeout
+            await new Promise<void>((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    // eslint-disable-next-line no-console
+                    console.log(`Timeout nådd. Hentet ${messages.length} meldinger`)
+                    resolve()
+                }, 10000) // 10 sekunder timeout
 
-                        for (const message of batch.messages) {
+                consumer
+                    .run({
+                        partitionsConsumedConcurrently: Math.min(topicMetadata.partitions.length, 5),
+                        eachMessage: async ({ partition, message }) => {
                             if (messageCount >= maxMessages) {
-                                await this.consumer!.stop()
+                                clearTimeout(timeout)
+                                resolve()
                                 return
                             }
 
@@ -159,7 +157,7 @@ export class KafkaConsumerService {
                                 key: message.key?.toString() || null,
                                 value: message.value?.toString() || null,
                                 headers: this.parseHeaders(message.headers),
-                                partition: batch.partition,
+                                partition,
                                 offset: message.offset,
                                 timestamp: message.timestamp,
                             }
@@ -169,58 +167,30 @@ export class KafkaConsumerService {
 
                             // eslint-disable-next-line no-console
                             console.log(
-                                `Lastet melding ${messageCount}/${maxMessages} fra partition ${batch.partition}, offset ${message.offset}`,
+                                `Lastet melding ${messageCount}/${maxMessages} fra partition ${partition}, offset ${message.offset}`,
                             )
 
                             if (messageCount >= maxMessages) {
-                                await this.consumer!.stop()
-                                return
+                                clearTimeout(timeout)
+                                resolve()
                             }
-
-                            resolveOffset(message.offset)
-                            await heartbeat()
-                        }
-                    },
-                })
-            }
-
-            // Start reading messages
-            const runPromise = run().catch((error) => {
-                // eslint-disable-next-line no-console
-                console.error('Feil ved lesing av Kafka meldinger:', error)
-                hasError = true
-            })
-
-            // Wait for messages to be collected or timeout
-            await Promise.race([
-                runPromise,
-                new Promise<void>((resolve) => {
-                    const timeout = setTimeout(() => {
+                        },
+                    })
+                    .catch((error) => {
                         // eslint-disable-next-line no-console
-                        console.log(`Timeout nådd. Hentet ${messages.length} meldinger`)
-                        resolve()
-                    }, 15000) // 15 sekunder timeout
-
-                    const checkMessages = () => {
-                        if (hasError || messageCount >= maxMessages) {
-                            clearTimeout(timeout)
-                            resolve()
-                        } else {
-                            setTimeout(checkMessages, 100)
-                        }
-                    }
-
-                    checkMessages()
-                }),
-            ])
-
-            if (hasError) {
-                throw new Error('Feil oppstod under lesing av meldinger')
+                        console.error('Feil ved lesing av Kafka meldinger:', error)
+                        clearTimeout(timeout)
+                        reject(error)
+                    })
+            })
+        } finally {
+            // Koble fra consumer
+            try {
+                await consumer.disconnect()
+            } catch (disconnectError) {
+                // eslint-disable-next-line no-console
+                console.log('Feil ved frakobling av consumer:', disconnectError)
             }
-        } catch (error) {
-            // eslint-disable-next-line no-console
-            console.error('Feil i readMessagesFromTopic:', error)
-            throw error
         }
 
         // Sorter meldinger etter timestamp (nyeste først)
