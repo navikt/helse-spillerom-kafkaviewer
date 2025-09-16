@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Heading, Button, TextField, Table, BodyShort, Loader } from '@navikt/ds-react'
+import { Heading, Button, TextField, Table, BodyShort, Loader, Alert } from '@navikt/ds-react'
 
 import { KafkaMessage } from '@/utils/kafkaConsumer'
 
@@ -14,20 +14,29 @@ interface KafkaResponse {
 const Page = () => {
     const [messages, setMessages] = useState<KafkaMessage[]>([])
     const [loading, setLoading] = useState(false)
-    const [topic, setTopic] = useState('spleiselaget.spillerom-behandlinger')
+    const [error, setError] = useState<string | null>(null)
+    const [topic, setTopic] = useState('speilvendt.spillerom-behandlinger')
     const [maxMessages, setMaxMessages] = useState(10)
 
     const fetchMessages = async () => {
         setLoading(true)
+        setError(null)
         try {
             const response = await fetch(
                 `/api/kafka-messages?topic=${encodeURIComponent(topic)}&maxMessages=${maxMessages}`,
             )
+
+            if (!response.ok) {
+                const errorData = await response.json()
+                throw new Error(errorData.details || errorData.error || 'Ukjent feil')
+            }
+
             const data: KafkaResponse = await response.json()
             setMessages(data.messages)
         } catch (error) {
             // eslint-disable-next-line no-console
             console.error('Feil ved henting av meldinger:', error)
+            setError(error instanceof Error ? error.message : 'Ukjent feil')
         } finally {
             setLoading(false)
         }
@@ -52,6 +61,12 @@ const Page = () => {
             </div>
 
             {loading && <Loader size="medium" />}
+
+            {error && (
+                <Alert variant="error">
+                    <BodyShort>{error}</BodyShort>
+                </Alert>
+            )}
 
             {messages.length > 0 && (
                 <div className="space-y-4">
