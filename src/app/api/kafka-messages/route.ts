@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { logger } from '@navikt/next-logger'
 
-import { KafkaConsumerService } from '@/utils/kafkaConsumer'
+import { kafkaConsumer } from '@/utils/kafkaConsumer'
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
     const startTime = Date.now()
@@ -10,34 +11,42 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         const topic = searchParams.get('topic') || 'speilvendt.spillerom-behandlinger'
         const maxMessages = parseInt(searchParams.get('maxMessages') || '100')
 
-        const consumerService = new KafkaConsumerService()
+        // Hent meldinger fra singleton-instansen
+        const messages = kafkaConsumer.getMessages(topic, maxMessages)
+        const status = kafkaConsumer.getStatus()
 
-        // Hent metadata først for debugging
-        const metadata = await consumerService.getTopicMetadata(topic)
-        const metadataTime = Date.now()
+        // Hent metadata hvis forespurt
+        let metadata = null
+        if (searchParams.get('includeMetadata') === 'true') {
+            metadata = await kafkaConsumer.getTopicMetadata(topic)
+        }
 
-        // Deretter hent meldinger
-        const messages = await consumerService.readMessagesFromTopic(topic, maxMessages)
         const endTime = Date.now()
 
         return NextResponse.json({
             topic,
             messageCount: messages.length,
             messages,
-            metadata: {
-                ...metadata,
-                requestDuration: {
-                    total: endTime - startTime,
-                    metadataFetch: metadataTime - startTime,
-                    messageFetch: endTime - metadataTime,
-                },
-                consumerGroup: consumerService.groupId,
-                timestamp: new Date().toISOString(),
+            consumerStatus: {
+                isRunning: status.isRunning,
+                lastUpdated: status.lastUpdated[topic] || null,
+                totalMessages: status.messageCount[topic] || 0,
+                availableTopics: kafkaConsumer.getTopics(),
             },
+            metadata: metadata
+                ? {
+                      ...metadata,
+                      requestDuration: endTime - startTime,
+                      consumerGroup: kafkaConsumer.groupId,
+                      timestamp: new Date().toISOString(),
+                  }
+                : {
+                      requestDuration: endTime - startTime,
+                      timestamp: new Date().toISOString(),
+                  },
         })
     } catch (error) {
-        // eslint-disable-next-line no-console
-        console.error('Feil ved henting av Kafka meldinger:', error)
+        logger.error('Feil ved henting av Kafka meldinger:', error)
 
         return NextResponse.json(
             {

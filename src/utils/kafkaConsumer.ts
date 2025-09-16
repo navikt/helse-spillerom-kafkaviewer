@@ -1,4 +1,6 @@
-import { Kafka, Consumer } from 'kafkajs'
+import { Kafka, Consumer, EachMessagePayload } from 'kafkajs'
+import { nextleton } from 'nextleton'
+import { logger } from '@navikt/next-logger'
 
 export interface KafkaMessage {
     key: string | null
@@ -7,6 +9,7 @@ export interface KafkaMessage {
     partition: number
     offset: string
     timestamp: string
+    topic: string
 }
 
 export interface TopicMetadata {
@@ -21,17 +24,29 @@ export interface PartitionMetadata {
     messageCount: number
 }
 
-export class KafkaConsumerService {
+interface KafkaStore {
+    messages: Map<string, KafkaMessage[]> // topic -> meldinger
+    isRunning: boolean
+    lastUpdated: Record<string, string> // topic -> timestamp
+}
+
+class KafkaConsumerSingleton {
     private kafka: Kafka
     private consumer: Consumer | null = null
+    private store: KafkaStore = {
+        messages: new Map(),
+        isRunning: false,
+        lastUpdated: {},
+    }
     public readonly groupId: string
+    private readonly MAX_MESSAGES_PER_TOPIC = 10000 // Begrens minnebruk
 
     constructor() {
-        // Lag en unik consumer group for hver request for å unngå offset-konflikter
-        this.groupId = `spillerom-kafkaviewer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+        // Fast consumer group for konsistent oppførsel
+        this.groupId = 'spillerom-kafkaviewer-singleton'
 
         this.kafka = new Kafka({
-            clientId: 'spillerom-kafkaviewer',
+            clientId: 'spillerom-kafkaviewer-singleton',
             brokers: process.env.KAFKA_BROKERS!.split(','),
             ssl: {
                 rejectUnauthorized: true,
@@ -39,7 +54,6 @@ export class KafkaConsumerService {
                 key: process.env.KAFKA_PRIVATE_KEY!,
                 cert: process.env.KAFKA_CERTIFICATE!,
             },
-            // Legg til retry og timeout konfigurasjon
             retry: {
                 initialRetryTime: 100,
                 retries: 8,
@@ -49,12 +63,121 @@ export class KafkaConsumerService {
         })
     }
 
+    async startPolling(topics: string[] = ['speilvendt.spillerom-behandlinger']): Promise<void> {
+        if (this.store.isRunning) {
+            logger.info('Kafka consumer kjører allerede')
+            return
+        }
+
+        try {
+            logger.info('Starter Kafka consumer singleton...')
+            this.store.isRunning = true
+
+            // Opprett consumer
+            this.consumer = this.kafka.consumer({
+                groupId: this.groupId,
+                sessionTimeout: 30000,
+                rebalanceTimeout: 60000,
+                heartbeatInterval: 3000,
+                maxWaitTimeInMs: 5000,
+            })
+
+            await this.consumer.connect()
+            logger.info('Kafka consumer tilkoblet')
+
+            // Subscribe til alle topics
+            for (const topic of topics) {
+                await this.consumer.subscribe({ topic, fromBeginning: true })
+                this.store.messages.set(topic, [])
+                logger.info(`Subscribet til topic: ${topic}`)
+            }
+
+            // Les historikk først
+            await this.loadHistoricMessages(topics)
+
+            // Start kontinuerlig polling
+            await this.consumer.run({
+                partitionsConsumedConcurrently: 10,
+                eachMessage: async (payload: EachMessagePayload) => {
+                    await this.handleMessage(payload)
+                },
+            })
+
+            logger.info('Kafka consumer startet og poller kontinuerlig')
+        } catch (error) {
+            logger.error('Feil ved oppstart av Kafka consumer:', error)
+            this.store.isRunning = false
+            throw error
+        }
+    }
+
+    private async loadHistoricMessages(topics: string[]): Promise<void> {
+        logger.info('Laster historiske meldinger...')
+
+        for (const topic of topics) {
+            try {
+                const admin = this.kafka.admin()
+                await admin.connect()
+
+                const offsets = await admin.fetchTopicOffsets(topic)
+                logger.info(`Laster historikk for ${topic}`, { offsets })
+
+                await admin.disconnect()
+
+                // Sett tidsstempel for når vi starter
+                this.store.lastUpdated[topic] = new Date().toISOString()
+            } catch (error) {
+                logger.error(`Feil ved lasting av historikk for ${topic}:`, error)
+            }
+        }
+    }
+
+    private async handleMessage(payload: EachMessagePayload): Promise<void> {
+        const { topic, partition, message } = payload
+
+        try {
+            const kafkaMessage: KafkaMessage = {
+                key: message.key?.toString() || null,
+                value: message.value?.toString() || null,
+                headers: this.parseHeaders(message.headers),
+                partition,
+                offset: message.offset,
+                timestamp: message.timestamp,
+                topic,
+            }
+
+            // Legg til melding i store
+            const topicMessages = this.store.messages.get(topic) || []
+            topicMessages.unshift(kafkaMessage) // Nyeste først
+
+            // Begrens antall meldinger per topic
+            if (topicMessages.length > this.MAX_MESSAGES_PER_TOPIC) {
+                topicMessages.splice(this.MAX_MESSAGES_PER_TOPIC)
+            }
+
+            this.store.messages.set(topic, topicMessages)
+            this.store.lastUpdated[topic] = new Date().toISOString()
+
+            logger.debug(`Håndterte melding fra ${topic}, partition ${partition}, offset ${message.offset}`)
+        } catch (error) {
+            logger.error('Feil ved håndtering av melding:', error)
+        }
+    }
+
     async connect(): Promise<void> {
-        // Denne metoden brukes ikke lenger - consumer opprettes per request
+        // Bakoverkompatibilitet - start polling hvis ikke allerede gjort
+        if (!this.store.isRunning) {
+            await this.startPolling()
+        }
     }
 
     async disconnect(): Promise<void> {
-        // Denne metoden brukes ikke lenger - consumer opprettes per request
+        if (this.consumer) {
+            await this.consumer.disconnect()
+            this.consumer = null
+        }
+        this.store.isRunning = false
+        logger.info('Kafka consumer disconnected')
     }
 
     async getTopicMetadata(topic: string): Promise<TopicMetadata> {
@@ -102,174 +225,26 @@ export class KafkaConsumerService {
         }
     }
 
-    async readMessagesFromTopic(topic: string, maxMessages: number = 100): Promise<KafkaMessage[]> {
-        // Opprett ny consumer og admin for hver request med optimaliserte innstillinger
-        const admin = this.kafka.admin()
-        const consumer = this.kafka.consumer({
-            groupId: this.groupId,
-            // Optimalisering for raskere oppstart
-            sessionTimeout: 10000, // Kortere session timeout
-            rebalanceTimeout: 5000, // Kortere rebalanse timeout
-            heartbeatInterval: 3000, // Hyppigere heartbeat
-            maxWaitTimeInMs: 1000, // Kortere venting på meldinger
-        })
+    getMessages(topic: string, maxMessages: number = 100): KafkaMessage[] {
+        const topicMessages = this.store.messages.get(topic) || []
+        return topicMessages.slice(0, maxMessages)
+    }
 
-        const messages: KafkaMessage[] = []
+    getTopics(): string[] {
+        return Array.from(this.store.messages.keys())
+    }
 
-        try {
-            // eslint-disable-next-line no-console
-            console.log(`Starter konsument for topic ${topic}, ønsker ${maxMessages} meldinger`)
-
-            // Koble til admin og consumer
-            await Promise.all([admin.connect(), consumer.connect()])
-
-            // Hent topic metadata og offsets
-            const metadata = await admin.fetchTopicMetadata({ topics: [topic] })
-            const topicData = metadata.topics[0]
-
-            if (!topicData) {
-                throw new Error(`Topic '${topic}' ikke funnet`)
-            }
-
-            const offsets = await admin.fetchTopicOffsets(topic)
-            // eslint-disable-next-line no-console
-            console.log('Topic offsets:', offsets)
-
-            // Beregn hvor vi skal starte lesing for å få de siste N meldingene
-            const seekPositions: Array<{ topic: string; partition: number; offset: string }> = []
-
-            for (const partitionOffset of offsets) {
-                const { partition, high, low } = partitionOffset
-                const totalMessages = parseInt(high) - parseInt(low)
-
-                if (totalMessages > 0) {
-                    // Beregn hvor mange meldinger vi vil ha fra denne partisjonen
-                    const messagesFromPartition = Math.ceil(
-                        maxMessages / offsets.filter((o) => parseInt(o.high) > parseInt(o.low)).length,
-                    )
-                    const startOffset = Math.max(parseInt(low), parseInt(high) - messagesFromPartition)
-
-                    seekPositions.push({
-                        topic,
-                        partition,
-                        offset: startOffset.toString(),
-                    })
-
-                    // eslint-disable-next-line no-console
-                    console.log(
-                        `Partition ${partition}: vil lese fra offset ${startOffset} til ${high} (${parseInt(high) - startOffset} meldinger)`,
-                    )
-                }
-            }
-
-            if (seekPositions.length === 0) {
-                // eslint-disable-next-line no-console
-                console.log('Ingen meldinger funnet i topic')
-                return []
-            }
-
-            // Subscribe til topic
-            await consumer.subscribe({ topic, fromBeginning: true })
-
-            // Variabel for å signalere at vi er ferdige
-            let messageResolver: (() => void) | null = null
-
-            // Start consumer først
-            consumer.run({
-                partitionsConsumedConcurrently: seekPositions.length,
-                eachMessage: async ({ partition, message }) => {
-                    if (messages.length >= maxMessages) {
-                        return
-                    }
-
-                    const kafkaMessage: KafkaMessage = {
-                        key: message.key?.toString() || null,
-                        value: message.value?.toString() || null,
-                        headers: this.parseHeaders(message.headers),
-                        partition,
-                        offset: message.offset,
-                        timestamp: message.timestamp,
-                    }
-
-                    messages.push(kafkaMessage)
-
-                    // eslint-disable-next-line no-console
-                    console.log(
-                        `Hentet melding ${messages.length}/${maxMessages} fra partition ${partition}, offset ${message.offset}`,
-                    )
-
-                    // Resolver umiddelbart når vi har nok meldinger
-                    if (messages.length >= maxMessages && messageResolver) {
-                        messageResolver()
-                    }
-                },
-            })
-
-            // Vent på at consumer'en blir tildelt partisjoner (kortere timeout)
-            await new Promise<void>((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    reject(new Error('Timeout ved venting på partisjon-tildeling'))
-                }, 3000) 
-
-                consumer.on('consumer.group_join', async () => {
-                    clearTimeout(timeout)
-                    // eslint-disable-next-line no-console
-                    console.log('Consumer fikk tildelt partisjoner, setter seek-posisjoner...')
-
-                    try {
-                        // Seek til riktige posisjoner
-                        for (const seekPos of seekPositions) {
-                            await consumer.seek(seekPos)
-                            // eslint-disable-next-line no-console
-                            console.log(`Seeket til partition ${seekPos.partition}, offset ${seekPos.offset}`)
-                        }
-                        resolve()
-                    } catch (error) {
-                        reject(error)
-                    }
-                })
-            })
-
-            // Vent på meldinger med timeout
-            await new Promise<void>((resolve) => {
-                messageResolver = resolve // Sett resolver slik at eachMessage kan kalle den
-
-                const timeout = setTimeout(() => {
-                    messageResolver = null // Nullstill resolver
-                    // eslint-disable-next-line no-console
-                    console.log(`Timeout nådd. Hentet ${messages.length} meldinger`)
-                    resolve()
-                }, 500)
-
-                const originalResolver = resolve
-                messageResolver = () => {
-                    messageResolver = null // Nullstill resolver
-                    clearTimeout(timeout)
-                    // eslint-disable-next-line no-console
-                    console.log(`Hentet alle ${messages.length} meldinger - stopper tidlig`)
-                    originalResolver()
-                }
-            })
-        } finally {
-            // Koble fra consumer og admin
-            try {
-                await Promise.all([consumer.disconnect(), admin.disconnect()])
-                // eslint-disable-next-line no-console
-                console.log('Consumer og admin frakoblet')
-            } catch (error) {
-                // eslint-disable-next-line no-console
-                console.error('Feil ved frakobling:', error)
-            }
+    getStatus(): { isRunning: boolean; lastUpdated: Record<string, string>; messageCount: Record<string, number> } {
+        const messageCount: Record<string, number> = {}
+        for (const [topic, messages] of this.store.messages) {
+            messageCount[topic] = messages.length
         }
 
-        // Sorter etter timestamp (nyeste først) og returner
-        messages.sort((a, b) => parseInt(b.timestamp) - parseInt(a.timestamp))
-        const result = messages.slice(0, maxMessages)
-
-        // eslint-disable-next-line no-console
-        console.log(`Returnerer ${result.length} meldinger sortert etter timestamp`)
-
-        return result
+        return {
+            isRunning: this.store.isRunning,
+            lastUpdated: { ...this.store.lastUpdated },
+            messageCount,
+        }
     }
 
     private parseHeaders(headers: Record<string, unknown> | undefined): Record<string, string | Buffer | undefined> {
@@ -301,5 +276,26 @@ export class KafkaConsumerService {
         }
 
         return parsedHeaders
+    }
+}
+
+// Opprett og eksporter singleton instance med nextleton
+export const kafkaConsumer = nextleton('kafkaConsumer', () => {
+    const instance = new KafkaConsumerSingleton()
+
+    // Start polling når instansen opprettes
+    if (typeof window === 'undefined') {
+        // Kun på server-side
+        instance.startPolling().catch((error) => logger.error('Feil ved oppstart av Kafka consumer:', error))
+    }
+
+    return instance
+})
+
+// Eksporter klasse for type-kompatibilitet
+export class KafkaConsumerService extends KafkaConsumerSingleton {
+    constructor() {
+        super()
+        logger.warn('KafkaConsumerService er deprecated. Bruk kafkaConsumer singleton i stedet.')
     }
 }
