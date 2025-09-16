@@ -7,7 +7,6 @@ import { Page } from '@navikt/ds-react'
 import { Preload } from '@/app/preload'
 import { Providers } from '@/app/providers'
 
-
 export const metadata: Metadata = {
     title: 'Spillerom kodeverk',
     icons: {
