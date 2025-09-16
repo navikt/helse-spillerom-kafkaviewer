@@ -58,7 +58,9 @@ class KafkaConsumerSingleton {
         const cert = process.env.KAFKA_CERTIFICATE
 
         if (!brokers.length || !ca || !key || !cert) {
-            throw new Error('Manglende Kafka miljøvariabler (KAFKA_BROKERS, KAFKA_CA, KAFKA_PRIVATE_KEY, KAFKA_CERTIFICATE)')
+            throw new Error(
+                'Manglende Kafka miljøvariabler (KAFKA_BROKERS, KAFKA_CA, KAFKA_PRIVATE_KEY, KAFKA_CERTIFICATE)',
+            )
         }
 
         this.kafka = new Kafka({
