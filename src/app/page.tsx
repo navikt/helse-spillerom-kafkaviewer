@@ -1,204 +1,94 @@
 'use client'
 
-import { useState } from 'react'
-import { Heading, Button, TextField, Table, BodyShort, Loader, Alert } from '@navikt/ds-react'
+import { useState, useEffect } from 'react'
+import { Heading, Button, TextField, Alert, BodyShort } from '@navikt/ds-react'
 
-import { KafkaMessage, TopicMetadata } from '@/utils/kafkaConsumer'
-
-interface KafkaResponse {
-    topic: string
-    messageCount: number
-    messages: KafkaMessage[]
-    consumerStatus: {
-        isRunning: boolean
-        lastUpdated: string | null
-        totalMessages: number
-        availableTopics: string[]
-    }
-    metadata?:
-        | (TopicMetadata & {
-              requestDuration: number
-              consumerGroup: string
-              timestamp: string
-          })
-        | {
-              requestDuration: number
-              timestamp: string
-          }
-}
+import { KafkaMessage } from '@/utils/kafkaConsumer'
+import { useKafkaMessages } from '@/hooks/queries/useKafkaMessages'
+import { Sidemeny } from '@/components/kafka/Sidemeny'
+import { MessageViewer } from '@/components/kafka/MessageViewer'
+import { ConsumerStatus } from '@/components/kafka/ConsumerStatus'
 
 const Page = () => {
-    const [messages, setMessages] = useState<KafkaMessage[]>([])
-    const [loading, setLoading] = useState(false)
-    const [error, setError] = useState<string | null>(null)
     const [topic, setTopic] = useState('speilvendt.spillerom-behandlinger')
     const [maxMessages, setMaxMessages] = useState(10)
-    const [metadata, setMetadata] = useState<KafkaResponse['metadata'] | null>(null)
-    const [consumerStatus, setConsumerStatus] = useState<KafkaResponse['consumerStatus'] | null>(null)
+    const [activeMessage, setActiveMessage] = useState<KafkaMessage | undefined>()
+    const [isSidemenyCollapsed, setIsSidemenyCollapsed] = useState(false)
 
-    const fetchMessages = async () => {
-        setLoading(true)
-        setError(null)
-        setMetadata(null)
-        setConsumerStatus(null)
-        try {
-            const response = await fetch(
-                `/api/kafka-messages?topic=${encodeURIComponent(topic)}&maxMessages=${maxMessages}&includeMetadata=true`,
-            )
+    // Hent Kafka meldinger med React Query
+    const { 
+        data: kafkaData, 
+        isLoading, 
+        error, 
+        refetch 
+    } = useKafkaMessages(topic, maxMessages, true)
 
-            if (!response.ok) {
-                const errorData = await response.json()
-                throw new Error(errorData.details || errorData.error || 'Ukjent feil')
-            }
-
-            const data: KafkaResponse = await response.json()
-            setMessages(data.messages)
-            setMetadata(data.metadata || null)
-            setConsumerStatus(data.consumerStatus)
-        } catch (error) {
-            // eslint-disable-next-line no-console
-            console.error('Feil ved henting av meldinger:', error)
-            setError(error instanceof Error ? error.message : 'Ukjent feil')
-        } finally {
-            setLoading(false)
+    // Sett første melding som aktiv når data lastes
+    useEffect(() => {
+        if (kafkaData?.messages && kafkaData.messages.length > 0 && !activeMessage) {
+            setActiveMessage(kafkaData.messages[0])
         }
+    }, [kafkaData, activeMessage])
+
+    const handleMessageClick = (message: KafkaMessage) => {
+        setActiveMessage(message)
+    }
+
+    const handleRefresh = () => {
+        refetch()
     }
 
     return (
-        <div className="space-y-6 p-6">
-            <Heading size="xlarge">Spillerom kafka viewer</Heading>
+        <div className="flex h-screen">
+            {/* Sidemeny */}
+            <Sidemeny
+                messages={kafkaData?.messages || []}
+                onMessageClick={handleMessageClick}
+                activeMessage={activeMessage}
+                isCollapsed={isSidemenyCollapsed}
+                onToggleCollapse={() => setIsSidemenyCollapsed(!isSidemenyCollapsed)}
+                isLoading={isLoading}
+            />
 
-            <div className="flex items-end gap-4">
-                <TextField label="Topic" value={topic} onChange={(e) => setTopic(e.target.value)} className="w-80" />
-                <TextField
-                    label="Maks antall meldinger"
-                    type="number"
-                    value={maxMessages.toString()}
-                    onChange={(e) => setMaxMessages(parseInt(e.target.value) || 10)}
-                    className="w-40"
-                />
-                <Button onClick={fetchMessages} loading={loading}>
-                    Hent meldinger
-                </Button>
-            </div>
-
-            {loading && <Loader size="medium" />}
-
-            {error && (
-                <Alert variant="error">
-                    <BodyShort>{error}</BodyShort>
-                </Alert>
-            )}
-
-            {consumerStatus && (
-                <div className="space-y-4">
-                    <Heading size="medium">Consumer-status</Heading>
-                    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                        <div className="space-y-2">
-                            <BodyShort>
-                                <strong>Status:</strong> {consumerStatus.isRunning ? '🟢 Kjører' : '🔴 Stoppet'}
-                            </BodyShort>
-                            <BodyShort>
-                                <strong>Meldinger i cache:</strong> {consumerStatus.totalMessages}
-                            </BodyShort>
-                            <BodyShort>
-                                <strong>Sist oppdatert:</strong>{' '}
-                                {consumerStatus.lastUpdated
-                                    ? new Date(consumerStatus.lastUpdated).toLocaleString('nb-NO')
-                                    : 'Ikke oppdatert'}
-                            </BodyShort>
-                            <BodyShort>
-                                <strong>Tilgjengelige topics:</strong> {consumerStatus.availableTopics.join(', ')}
-                            </BodyShort>
+            {/* Hovedinnhold */}
+            <div className="flex-1 overflow-y-auto">
+                <div className="p-6 space-y-6">
+                    <div className="flex items-center justify-between">
+                        <Heading size="xlarge">Spillerom Kafka Viewer</Heading>
+                        <div className="flex items-center gap-4">
+                            <TextField 
+                                label="Topic" 
+                                value={topic} 
+                                onChange={(e) => setTopic(e.target.value)} 
+                                className="w-60" 
+                            />
+                            <TextField
+                                label="Antall meldinger"
+                                type="number"
+                                value={maxMessages.toString()}
+                                onChange={(e) => setMaxMessages(parseInt(e.target.value) || 10)}
+                                className="w-32"
+                            />
+                            <Button onClick={handleRefresh} loading={isLoading}>
+                                Oppdater
+                            </Button>
                         </div>
-                        {metadata && (
-                            <div className="space-y-2">
-                                <BodyShort>
-                                    <strong>Responstid:</strong> {metadata.requestDuration}ms
-                                </BodyShort>
-                                {'consumerGroup' in metadata && (
-                                    <BodyShort>
-                                        <strong>Consumer group:</strong> {metadata.consumerGroup}
-                                    </BodyShort>
-                                )}
-                                <BodyShort>
-                                    <strong>Tidsstempel:</strong> {new Date(metadata.timestamp).toLocaleString('nb-NO')}
-                                </BodyShort>
-                            </div>
-                        )}
                     </div>
 
-                    {metadata && 'partitions' in metadata && (
-                        <div>
-                            <Heading size="small">Partisjonsinfo</Heading>
-                            <Table size="small">
-                                <Table.Header>
-                                    <Table.Row>
-                                        <Table.HeaderCell>Partisjon</Table.HeaderCell>
-                                        <Table.HeaderCell>Lav offset</Table.HeaderCell>
-                                        <Table.HeaderCell>Høy offset</Table.HeaderCell>
-                                        <Table.HeaderCell>Meldinger</Table.HeaderCell>
-                                    </Table.Row>
-                                </Table.Header>
-                                <Table.Body>
-                                    {metadata.partitions.map((partition) => (
-                                        <Table.Row key={partition.partition}>
-                                            <Table.DataCell>{partition.partition}</Table.DataCell>
-                                            <Table.DataCell>{partition.lowWatermark}</Table.DataCell>
-                                            <Table.DataCell>{partition.highWatermark}</Table.DataCell>
-                                            <Table.DataCell>{partition.messageCount}</Table.DataCell>
-                                        </Table.Row>
-                                    ))}
-                                </Table.Body>
-                            </Table>
-                        </div>
+                    {error && (
+                        <Alert variant="error">
+                            <BodyShort>Feil ved henting av Kafka meldinger: {error.message}</BodyShort>
+                        </Alert>
                     )}
-                </div>
-            )}
 
-            {messages.length > 0 && (
-                <div className="space-y-4">
-                    <BodyShort>Fant {messages.length} meldinger</BodyShort>
-                    <Table>
-                        <Table.Header>
-                            <Table.Row>
-                                <Table.HeaderCell>Key</Table.HeaderCell>
-                                <Table.HeaderCell>Value</Table.HeaderCell>
-                                <Table.HeaderCell>Headers</Table.HeaderCell>
-                                <Table.HeaderCell>Partition</Table.HeaderCell>
-                                <Table.HeaderCell>Offset</Table.HeaderCell>
-                                <Table.HeaderCell>Tidsstempel</Table.HeaderCell>
-                            </Table.Row>
-                        </Table.Header>
-                        <Table.Body>
-                            {messages.map((message, index) => (
-                                <Table.Row key={index}>
-                                    <Table.DataCell>
-                                        <pre className="bg-gray-100 max-w-xs overflow-auto rounded p-2 text-xs">
-                                            {message.key || 'null'}
-                                        </pre>
-                                    </Table.DataCell>
-                                    <Table.DataCell>
-                                        <pre className="bg-gray-100 max-w-md overflow-auto rounded p-2 text-xs">
-                                            {message.value || 'null'}
-                                        </pre>
-                                    </Table.DataCell>
-                                    <Table.DataCell>
-                                        <pre className="bg-gray-100 max-w-xs overflow-auto rounded p-2 text-xs">
-                                            {JSON.stringify(message.headers, null, 2)}
-                                        </pre>
-                                    </Table.DataCell>
-                                    <Table.DataCell>{message.partition}</Table.DataCell>
-                                    <Table.DataCell>{message.offset}</Table.DataCell>
-                                    <Table.DataCell>
-                                        {new Date(parseInt(message.timestamp)).toLocaleString('nb-NO')}
-                                    </Table.DataCell>
-                                </Table.Row>
-                            ))}
-                        </Table.Body>
-                    </Table>
+                    <ConsumerStatus />
+
+                    <MessageViewer 
+                        message={activeMessage} 
+                        isLoading={isLoading}
+                    />
                 </div>
-            )}
+            </div>
         </div>
     )
 }
