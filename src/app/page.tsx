@@ -9,15 +9,22 @@ interface KafkaResponse {
     topic: string
     messageCount: number
     messages: KafkaMessage[]
-    metadata?: TopicMetadata & {
-        requestDuration: {
-            total: number
-            metadataFetch: number
-            messageFetch: number
-        }
-        consumerGroup: string
-        timestamp: string
+    consumerStatus: {
+        isRunning: boolean
+        lastUpdated: string | null
+        totalMessages: number
+        availableTopics: string[]
     }
+    metadata?:
+        | (TopicMetadata & {
+              requestDuration: number
+              consumerGroup: string
+              timestamp: string
+          })
+        | {
+              requestDuration: number
+              timestamp: string
+          }
 }
 
 const Page = () => {
@@ -27,14 +34,16 @@ const Page = () => {
     const [topic, setTopic] = useState('speilvendt.spillerom-behandlinger')
     const [maxMessages, setMaxMessages] = useState(10)
     const [metadata, setMetadata] = useState<KafkaResponse['metadata'] | null>(null)
+    const [consumerStatus, setConsumerStatus] = useState<KafkaResponse['consumerStatus'] | null>(null)
 
     const fetchMessages = async () => {
         setLoading(true)
         setError(null)
         setMetadata(null)
+        setConsumerStatus(null)
         try {
             const response = await fetch(
-                `/api/kafka-messages?topic=${encodeURIComponent(topic)}&maxMessages=${maxMessages}`,
+                `/api/kafka-messages?topic=${encodeURIComponent(topic)}&maxMessages=${maxMessages}&includeMetadata=true`,
             )
 
             if (!response.ok) {
@@ -45,6 +54,7 @@ const Page = () => {
             const data: KafkaResponse = await response.json()
             setMessages(data.messages)
             setMetadata(data.metadata || null)
+            setConsumerStatus(data.consumerStatus)
         } catch (error) {
             // eslint-disable-next-line no-console
             console.error('Feil ved henting av meldinger:', error)
@@ -80,57 +90,69 @@ const Page = () => {
                 </Alert>
             )}
 
-            {metadata && (
+            {consumerStatus && (
                 <div className="space-y-4">
-                    <Heading size="medium">Topic-informasjon</Heading>
+                    <Heading size="medium">Consumer-status</Heading>
                     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                         <div className="space-y-2">
                             <BodyShort>
-                                <strong>Partisjoner:</strong> {metadata.partitions.length}
+                                <strong>Status:</strong> {consumerStatus.isRunning ? '🟢 Kjører' : '🔴 Stoppet'}
                             </BodyShort>
                             <BodyShort>
-                                <strong>Total meldinger i topic:</strong> {metadata.totalMessages}
+                                <strong>Meldinger i cache:</strong> {consumerStatus.totalMessages}
                             </BodyShort>
                             <BodyShort>
-                                <strong>Consumer group:</strong> {metadata.consumerGroup}
+                                <strong>Sist oppdatert:</strong>{' '}
+                                {consumerStatus.lastUpdated
+                                    ? new Date(consumerStatus.lastUpdated).toLocaleString('nb-NO')
+                                    : 'Ikke oppdatert'}
                             </BodyShort>
                             <BodyShort>
-                                <strong>Tidsstempel:</strong> {new Date(metadata.timestamp).toLocaleString('nb-NO')}
+                                <strong>Tilgjengelige topics:</strong> {consumerStatus.availableTopics.join(', ')}
                             </BodyShort>
                         </div>
-                        <div className="space-y-2">
-                            <BodyShort>
-                                <strong>Responstid:</strong>
-                            </BodyShort>
-                            <BodyShort>• Total: {metadata.requestDuration.total}ms</BodyShort>
-                            <BodyShort>• Metadata: {metadata.requestDuration.metadataFetch}ms</BodyShort>
-                            <BodyShort>• Meldinger: {metadata.requestDuration.messageFetch}ms</BodyShort>
-                        </div>
+                        {metadata && (
+                            <div className="space-y-2">
+                                <BodyShort>
+                                    <strong>Responstid:</strong> {metadata.requestDuration}ms
+                                </BodyShort>
+                                {'consumerGroup' in metadata && (
+                                    <BodyShort>
+                                        <strong>Consumer group:</strong> {metadata.consumerGroup}
+                                    </BodyShort>
+                                )}
+                                <BodyShort>
+                                    <strong>Tidsstempel:</strong> {new Date(metadata.timestamp).toLocaleString('nb-NO')}
+                                </BodyShort>
+                            </div>
+                        )}
                     </div>
 
-                    <div>
-                        <Heading size="small">Partisjonsinfo</Heading>
-                        <Table size="small">
-                            <Table.Header>
-                                <Table.Row>
-                                    <Table.HeaderCell>Partisjon</Table.HeaderCell>
-                                    <Table.HeaderCell>Lav offset</Table.HeaderCell>
-                                    <Table.HeaderCell>Høy offset</Table.HeaderCell>
-                                    <Table.HeaderCell>Meldinger</Table.HeaderCell>
-                                </Table.Row>
-                            </Table.Header>
-                            <Table.Body>
-                                {metadata.partitions.map((partition) => (
-                                    <Table.Row key={partition.partition}>
-                                        <Table.DataCell>{partition.partition}</Table.DataCell>
-                                        <Table.DataCell>{partition.lowWatermark}</Table.DataCell>
-                                        <Table.DataCell>{partition.highWatermark}</Table.DataCell>
-                                        <Table.DataCell>{partition.messageCount}</Table.DataCell>
+                    {metadata && 'partitions' in metadata && (
+                        <div>
+                            <Heading size="small">Partisjonsinfo</Heading>
+                            <Table size="small">
+                                <Table.Header>
+                                    <Table.Row>
+                                        <Table.HeaderCell>Partisjon</Table.HeaderCell>
+                                        <Table.HeaderCell>Lav offset</Table.HeaderCell>
+                                        <Table.HeaderCell>Høy offset</Table.HeaderCell>
+                                        <Table.HeaderCell>Meldinger</Table.HeaderCell>
                                     </Table.Row>
-                                ))}
-                            </Table.Body>
-                        </Table>
-                    </div>
+                                </Table.Header>
+                                <Table.Body>
+                                    {metadata.partitions.map((partition) => (
+                                        <Table.Row key={partition.partition}>
+                                            <Table.DataCell>{partition.partition}</Table.DataCell>
+                                            <Table.DataCell>{partition.lowWatermark}</Table.DataCell>
+                                            <Table.DataCell>{partition.highWatermark}</Table.DataCell>
+                                            <Table.DataCell>{partition.messageCount}</Table.DataCell>
+                                        </Table.Row>
+                                    ))}
+                                </Table.Body>
+                            </Table>
+                        </div>
+                    )}
                 </div>
             )}
 

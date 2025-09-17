@@ -18,12 +18,16 @@ export const metadata: Metadata = {
 }
 
 export default async function RootLayout({ children }: Readonly<PropsWithChildren>): Promise<ReactElement> {
-    // Initialiser Kafka consumer når appen starter
-    try {
-        await kafkaConsumer.connect()
-        logger.info('Kafka consumer initialisert ved app-oppstart')
-    } catch (error) {
-        logger.error('Feil ved initialisering av Kafka consumer:', error)
+    // Initialiser Kafka consumer kun i produksjon
+    if (process.env.NODE_ENV !== 'development') {
+        try {
+            await kafkaConsumer.connect()
+            logger.info('Kafka consumer initialisert ved app-oppstart')
+        } catch (error) {
+            logger.error('Feil ved initialisering av Kafka consumer:', error)
+        }
+    } else {
+        logger.info('Lokal utvikling - hopper over Kafka consumer initialisering')
     }
 
     return (
