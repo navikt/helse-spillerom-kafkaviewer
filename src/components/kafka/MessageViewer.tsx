@@ -1,6 +1,6 @@
 'use client'
 
-import { Heading, BodyShort, Table, Alert, Skeleton } from '@navikt/ds-react'
+import { Heading, BodyShort, Table, Skeleton } from '@navikt/ds-react'
 
 import { KafkaMessage } from '@/utils/kafkaConsumer'
 

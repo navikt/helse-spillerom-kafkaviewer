@@ -42,13 +42,13 @@ const formatTimestamp = (timestamp: string): string => {
     }
 }
 
-export const Sidemeny = ({ 
-    messages, 
-    onMessageClick, 
-    activeMessage, 
-    isCollapsed, 
-    onToggleCollapse, 
-    isLoading 
+export const Sidemeny = ({
+    messages,
+    onMessageClick,
+    activeMessage,
+    isCollapsed,
+    onToggleCollapse,
+    isLoading,
 }: SidemenyProps) => {
     return (
         <div
@@ -75,18 +75,17 @@ export const Sidemeny = ({
                         // Skeleton loading
                         Array.from({ length: 5 }).map((_, index) => (
                             <div key={index} className="bg-white rounded-md border p-3">
-                                <Skeleton className="h-4 w-3/4 mb-2" />
+                                <Skeleton className="mb-2 h-4 w-3/4" />
                                 <Skeleton className="h-3 w-1/2" />
                             </div>
                         ))
                     ) : messages.length === 0 ? (
-                        <div className="text-gray-500 text-center py-8">
-                            Ingen meldinger funnet
-                        </div>
+                        <div className="text-gray-500 py-8 text-center">Ingen meldinger funnet</div>
                     ) : (
-                        messages.map((message, index) => {
-                            const isActive = activeMessage?.offset === message.offset && 
-                                           activeMessage?.partition === message.partition
+                        messages.map((message) => {
+                            const isActive =
+                                activeMessage?.offset === message.offset &&
+                                activeMessage?.partition === message.partition
                             const preview = formatMessagePreview(message)
                             const timestamp = formatTimestamp(message.timestamp)
 
@@ -100,8 +99,8 @@ export const Sidemeny = ({
                                     }`}
                                     onClick={() => onMessageClick(message)}
                                 >
-                                    <div className="flex flex-col items-start w-full">
-                                        <span className="text-sm leading-tight font-medium truncate w-full">
+                                    <div className="flex w-full flex-col items-start">
+                                        <span className="w-full truncate text-sm leading-tight font-medium">
                                             {preview}
                                         </span>
                                         <span

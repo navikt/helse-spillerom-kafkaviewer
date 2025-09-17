@@ -16,12 +16,7 @@ const Page = () => {
     const [isSidemenyCollapsed, setIsSidemenyCollapsed] = useState(false)
 
     // Hent Kafka meldinger med React Query
-    const { 
-        data: kafkaData, 
-        isLoading, 
-        error, 
-        refetch 
-    } = useKafkaMessages(topic, maxMessages, true)
+    const { data: kafkaData, isLoading, error, refetch } = useKafkaMessages(topic, maxMessages, true)
 
     // Sett første melding som aktiv når data lastes
     useEffect(() => {
@@ -52,15 +47,15 @@ const Page = () => {
 
             {/* Hovedinnhold */}
             <div className="flex-1 overflow-y-auto">
-                <div className="p-6 space-y-6">
+                <div className="space-y-6 p-6">
                     <div className="flex items-center justify-between">
                         <Heading size="xlarge">Spillerom Kafka Viewer</Heading>
                         <div className="flex items-center gap-4">
-                            <TextField 
-                                label="Topic" 
-                                value={topic} 
-                                onChange={(e) => setTopic(e.target.value)} 
-                                className="w-60" 
+                            <TextField
+                                label="Topic"
+                                value={topic}
+                                onChange={(e) => setTopic(e.target.value)}
+                                className="w-60"
                             />
                             <TextField
                                 label="Antall meldinger"
@@ -83,10 +78,7 @@ const Page = () => {
 
                     <ConsumerStatus />
 
-                    <MessageViewer 
-                        message={activeMessage} 
-                        isLoading={isLoading}
-                    />
+                    <MessageViewer message={activeMessage} isLoading={isLoading} />
                 </div>
             </div>
         </div>
