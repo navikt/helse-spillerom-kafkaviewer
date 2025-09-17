@@ -1,6 +1,11 @@
 'use client'
 
-import { Heading, Skeleton, Table, ReadMore } from '@navikt/ds-react'
+import { useState } from 'react'
+import { Heading, Skeleton, Table, ReadMore, Switch } from '@navikt/ds-react'
+import { useTheme } from 'next-themes'
+import JsonView from 'react18-json-view'
+import 'react18-json-view/src/style.css'
+import 'react18-json-view/src/dark.css'
 
 import { KafkaMessage } from '@/utils/kafkaConsumer'
 
@@ -10,6 +15,9 @@ interface MessageViewerProps {
 }
 
 export const MessageViewer = ({ message, isLoading }: MessageViewerProps) => {
+    const [isSmartView, setIsSmartView] = useState(true)
+    const { theme } = useTheme()
+
     if (isLoading) {
         return (
             <div className="space-y-6">
@@ -54,6 +62,34 @@ export const MessageViewer = ({ message, isLoading }: MessageViewerProps) => {
         return JSON.stringify(headers, null, 2)
     }
 
+    const renderSmartView = (value: string | null) => {
+        if (!value) return <div className="text-gray-500 italic">null</div>
+
+        try {
+            const parsed = JSON.parse(value)
+            return (
+                <div className="bg-gray-50 dark:bg-gray-800 rounded p-4">
+                    <JsonView
+                        src={parsed}
+                        theme={theme === 'dark' ? 'winter-is-coming' : 'default'}
+                        enableClipboard={false}
+                        collapsed={false}
+                        style={{
+                            fontSize: '14px',
+                            fontFamily: 'monospace',
+                        }}
+                    />
+                </div>
+            )
+        } catch {
+            return <div className="text-gray-500 italic">Ikke gyldig JSON</div>
+        }
+    }
+
+    const renderRawView = (value: string | null) => {
+        return <pre className="bg-gray-100 max-w-full overflow-auto rounded p-4 text-xs">{formatJsonValue(value)}</pre>
+    }
+
     return (
         <div className="space-y-6">
             <div className="space-y-4">
@@ -88,11 +124,7 @@ export const MessageViewer = ({ message, isLoading }: MessageViewerProps) => {
                                 <Table.DataCell>
                                     <strong>Key</strong>
                                 </Table.DataCell>
-                                <Table.DataCell>
-                                    <pre className="bg-gray-100 max-w-md overflow-auto rounded p-2 text-xs">
-                                        {message.key || 'null'}
-                                    </pre>
-                                </Table.DataCell>
+                                <Table.DataCell>{message.key}</Table.DataCell>
                             </Table.Row>
                         </Table.Body>
                     </Table>
@@ -105,12 +137,21 @@ export const MessageViewer = ({ message, isLoading }: MessageViewerProps) => {
                 </ReadMore>
 
                 <div>
-                    <Heading level="2" size="medium">
-                        Value
-                    </Heading>
-                    <pre className="bg-gray-100 max-w-full overflow-auto rounded p-4 text-xs">
-                        {formatJsonValue(message.value)}
-                    </pre>
+                    <div className="mb-4 flex items-center justify-between">
+                        <Heading level="2" size="medium">
+                            Value
+                        </Heading>
+                        <div className="flex items-center gap-2">
+                            <Switch
+                                checked={isSmartView}
+                                onChange={(e) => setIsSmartView(e.target.checked)}
+                                size="small"
+                            >
+                                Smart visning
+                            </Switch>
+                        </div>
+                    </div>
+                    {isSmartView ? renderSmartView(message.value) : renderRawView(message.value)}
                 </div>
             </div>
         </div>
