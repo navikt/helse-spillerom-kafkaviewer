@@ -37,7 +37,7 @@
         "react-dom": "^19.1.1",
         "react-hook-form": "^7.62.0",
         "react18-json-view": "^0.2.9",
-        "remeda": "^2.29.0",
+        "remeda": "^2.31.1",
         "tailwind-merge": "^3.3.1",
         "uuid": "^11.1.0"
     },
