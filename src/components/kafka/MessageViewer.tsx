@@ -1,6 +1,6 @@
 'use client'
 
-import { Heading, BodyShort, Table, Skeleton } from '@navikt/ds-react'
+import { Heading, Skeleton, Table, ReadMore } from '@navikt/ds-react'
 
 import { KafkaMessage } from '@/utils/kafkaConsumer'
 
@@ -56,20 +56,8 @@ export const MessageViewer = ({ message, isLoading }: MessageViewerProps) => {
 
     return (
         <div className="space-y-6">
-            <div>
-                <Heading level="1" size="large">
-                    Kafka melding
-                </Heading>
-                <BodyShort className="text-gray-600 mt-1">
-                    Partition {message.partition} • Offset {message.offset} • {formatTimestamp(message.timestamp)}
-                </BodyShort>
-            </div>
-
             <div className="space-y-4">
-                <div>
-                    <Heading level="2" size="medium">
-                        Metadata
-                    </Heading>
+                <ReadMore header="Metadata">
                     <Table size="small">
                         <Table.Body>
                             <Table.Row>
@@ -108,16 +96,13 @@ export const MessageViewer = ({ message, isLoading }: MessageViewerProps) => {
                             </Table.Row>
                         </Table.Body>
                     </Table>
-                </div>
+                </ReadMore>
 
-                <div>
-                    <Heading level="2" size="medium">
-                        Headers
-                    </Heading>
+                <ReadMore header="Headers">
                     <pre className="bg-gray-100 max-w-full overflow-auto rounded p-4 text-xs">
                         {formatHeaders(message.headers)}
                     </pre>
-                </div>
+                </ReadMore>
 
                 <div>
                     <Heading level="2" size="medium">

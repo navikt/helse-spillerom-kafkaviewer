@@ -26,6 +26,6 @@ export function useKafkaStatus() {
             return response.json()
         },
         staleTime: 10 * 1000, // 10 sekunder
-        refetchInterval: 5 * 1000, // Poll hver 5. sekund for status
+        refetchOnWindowFocus: true, // Refetch når vinduet får fokus
     })
 }

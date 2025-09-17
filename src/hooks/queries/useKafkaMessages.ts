@@ -45,6 +45,6 @@ export function useKafkaMessages(topic: string, maxMessages: number = 10, includ
             return response.json()
         },
         staleTime: 30 * 1000, // 30 sekunder
-        refetchInterval: 10 * 1000, // Poll hver 10. sekund for nye meldinger
+        refetchOnWindowFocus: true, // Refetch når vinduet får fokus
     })
 }

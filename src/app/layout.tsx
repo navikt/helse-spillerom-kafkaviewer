@@ -7,6 +7,7 @@ import { logger } from '@navikt/next-logger'
 
 import { Preload } from '@/app/preload'
 import { Providers } from '@/app/providers'
+import { Header } from '@/components/header/Header'
 // Initialiser Kafka consumer ved app-oppstart
 import { kafkaConsumer } from '@/utils/kafkaConsumer'
 
@@ -35,7 +36,10 @@ export default async function RootLayout({ children }: Readonly<PropsWithChildre
             <Preload />
             <body>
                 <Providers>
-                    <Page contentBlockPadding="none">{children}</Page>
+                    <Page contentBlockPadding="none">
+                        <Header />
+                        {children}
+                    </Page>
                 </Providers>
             </body>
         </html>
