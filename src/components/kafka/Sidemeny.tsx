@@ -106,7 +106,7 @@ export const Sidemeny = ({
                                         <span
                                             className={`mt-1 text-xs ${isActive ? 'text-blue-100' : 'text-gray-500'}`}
                                         >
-                                            {timestamp} • P{message.partition}
+                                            {timestamp}
                                         </span>
                                     </div>
                                 </Button>
