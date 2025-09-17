@@ -42,8 +42,13 @@ class KafkaConsumerSingleton {
     private readonly MAX_MESSAGES_PER_TOPIC = 10000 // Begrens minnebruk
 
     constructor() {
-        // Fast consumer group for konsistent oppførsel
-        this.groupId = 'spillerom-kafkaviewer-singleton'
+        // Dynamisk consumer group for å unngå offset-konflikter ved deploy
+        // Bruker timestamp + random for å sikre unik group ID per oppstart
+        const timestamp = Date.now()
+        const random = Math.random().toString(36).substr(2, 9)
+        this.groupId = `spillerom-kafkaviewer-${timestamp}-${random}`
+
+        logger.info(`Opprettet ny consumer group: ${this.groupId}`)
     }
 
     private getKafkaConfig(): Kafka {
@@ -64,7 +69,7 @@ class KafkaConsumerSingleton {
         }
 
         this.kafka = new Kafka({
-            clientId: 'spillerom-kafkaviewer-singleton',
+            clientId: `spillerom-kafkaviewer-${Date.now()}`,
             brokers,
             ssl: {
                 rejectUnauthorized: true,
